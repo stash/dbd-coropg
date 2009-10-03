@@ -82,6 +82,11 @@ static PGTransactionStatusType pg_db_txn_status (pTHX_ imp_dbh_t *imp_dbh);
 static int pg_db_start_txn (pTHX_ SV *dbh, imp_dbh_t *imp_dbh);
 static int handle_old_async(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const int asyncflag);
 
+static PGconn * coro_PQconnectdb(pTHX_ SV *dbh, imp_dbh_t *imp_dbh, const char *conn_str);
+static void coro_cleanup (pTHX_ SV *dbh, imp_dbh_t *imp_dbh);
+static SV *coro_init (pTHX_ SV *dbh, imp_dbh_t *imp_dbh);
+static int coro_wait_for (pTHX_ SV *dbh, imp_dbh_t *imp_dbh, int readable);
+
 /* ================================================================== */
 void dbd_init (dbistate_t *dbistate)
 {
@@ -172,7 +177,7 @@ int dbd_db_login (SV * dbh, imp_dbh_t * imp_dbh, char * dbname, char * uid, char
 	/* Attempt the connection to the database */
 	if (TLOGIN) TRC(DBILOGFP, "%sLogin connection string: (%s)\n", THEADER, conn_str);
 	TRACE_PQCONNECTDB;
-	imp_dbh->conn = PQconnectdb(conn_str);
+	imp_dbh->conn = coro_PQconnectdb(aTHX_ dbh, imp_dbh, conn_str);
 	if (TLOGIN) TRC(DBILOGFP, "%sConnection complete\n", THEADER);
 	Safefree(conn_str);
 
@@ -619,6 +624,8 @@ void dbd_db_destroy (SV * dbh, imp_dbh_t * imp_dbh)
 	sv_free((SV *)imp_dbh->savepoints);
 	Safefree(imp_dbh->sqlstate);
 
+        coro_cleanup(aTHX_ dbh, imp_dbh);
+
 	DBIc_IMPSET_off(imp_dbh);
 
 	if (TEND) TRC(DBILOGFP, "%sEnd dbd_db_destroy\n", THEADER);
@@ -678,7 +685,7 @@ SV * dbd_db_FETCH_attrib (SV * dbh, imp_dbh_t * imp_dbh, SV * keysv)
 
 		if (strEQ("pg_socket", key)) {
 			TRACE_PQSOCKET;
-			retsv = newSViv((IV)PQsocket(imp_dbh->conn));
+			retsv = newSViv(imp_dbh->socket_fd);
 		}
 		break;
 
@@ -4893,6 +4900,157 @@ typedef enum
 } ExecStatusType;
 
 */
+
+static SV *coro_init (pTHX_ SV *dbh, imp_dbh_t *imp_dbh)
+{
+    dSP;
+    fprintf(stderr, "# coro init\n"); fflush(stderr);
+
+    ENTER;
+    SAVETMPS;
+
+    PUSHMARK(SP);
+    //XPUSHs(dbh);
+    XPUSHs(sv_2mortal(newSViv(imp_dbh->socket_fd)));
+    PUTBACK;
+    call_pv("DBD::Pg::dr::_coro_init", G_SCALAR|G_EVAL);
+    SPAGAIN;
+
+    if (SvTRUE(ERRSV)) {
+        /* XXX: cop-out error handling; croak never returns */
+        /* ideally pass ERRSV up to the perl stack */
+        croak("error in coro init: %s", SvPVX(ERRSV));
+    }
+    else {
+        imp_dbh->coro_handle = POPs;
+        SvREFCNT_inc(imp_dbh->coro_handle);
+    }
+
+    FREETMPS;
+    LEAVE;
+
+    return imp_dbh->coro_handle;
+}
+
+static void coro_cleanup (pTHX_ SV *dbh, imp_dbh_t *imp_dbh)
+{
+    if (imp_dbh->coro_handle) {
+        SvREFCNT_dec(imp_dbh->coro_handle);
+        imp_dbh->coro_handle = NULL;
+    }
+}
+
+#define READABLE 1
+#define WRITABLE 0
+#define CORO_WAIT_FOR_READABLE coro_wait_for(aTHX_ dbh, imp_dbh, READABLE)
+#define CORO_WAIT_FOR_WRITABLE coro_wait_for(aTHX_ dbh, imp_dbh, WRITABLE)
+
+static int coro_wait_for (pTHX_ SV *dbh, imp_dbh_t *imp_dbh, int readable) 
+{
+    dSP;
+    int c;
+    int result = 0;
+
+    fprintf(stderr,"coro_wait_for %s\n", (readable == READABLE ? "readable" : "writable"));
+    fflush(stderr);
+
+    ENTER;
+    SAVETMPS;
+
+    PUSHMARK(SP);
+    XPUSHs(dbh);
+    XPUSHs(imp_dbh->coro_handle);
+    PUTBACK;
+    c = call_pv((readable == READABLE ? "DBD::Pg::dr::_coro_readable" : "DBD::Pg::dr::_coro_writable"), G_SCALAR|G_EVAL);
+    SPAGAIN;
+
+    if (SvTRUE(ERRSV)) {
+        /* XXX: cop-out error handling; croak never returns */
+        /* ideally pass ERRSV up to the perl stack */
+        croak("error while waiting for handle to become %s: %s",
+              (readable==READABLE)?"readable":"writable", SvPVX(ERRSV));
+    }
+    else {
+        result = POPi;
+    }
+
+    FREETMPS;
+    LEAVE;
+
+    return result;
+}
+
+static PGconn * coro_PQconnectdb(pTHX_ SV *dbh, imp_dbh_t *imp_dbh, const char *conn_str) {
+    PGconn *conn;
+    PostgresPollingStatusType next_state;
+    int fd;
+
+    fprintf(stderr, "# connecting to %s\n", conn_str); fflush(stderr);
+
+    /* XXX: blocks on network lookup */
+    TRACE_PQCONNECTSTART;
+    conn = PQconnectStart(conn_str);
+    if (conn == NULL) goto bail_connect;
+    fprintf(stderr, "# started...\n"); fflush(stderr);
+
+    TRACE_PQSTATUS;
+    fprintf(stderr, "# status %d...\n", PQstatus(conn)); fflush(stderr);
+    if (PQstatus(conn) == CONNECTION_BAD) {
+        goto bail_connect;
+    }
+
+    TRACE_PQSETNONBLOCKING;
+    PQsetnonblocking(conn,1);
+
+    TRACE_PQSOCKET;
+    imp_dbh->socket_fd = PQsocket(conn);
+    if (!coro_init(aTHX_ dbh, imp_dbh)) {
+    }
+    next_state = PGRES_POLLING_WRITING;
+    do {
+        sleep(1);
+        fprintf(stderr, "# polling got state %d...\n", next_state); fflush(stderr);
+        if (next_state == PGRES_POLLING_WRITING) {
+            if (CORO_WAIT_FOR_WRITABLE != 1) {
+                croak("error connecting while trying to write");
+                goto bail_connect;
+            }
+        }
+        else if (next_state == PGRES_POLLING_READING) {
+            if (CORO_WAIT_FOR_READABLE != 1) {
+                croak("error connecting while trying to read");
+                goto bail_connect;
+            }
+        }
+        else {
+            goto bail_connect;
+            break;
+        }
+
+        TRACE_PQCONNECTPOLL;
+    } while ((next_state = PQconnectPoll(conn)) != PGRES_POLLING_OK);
+
+    fprintf(stderr, "# done polling...\n"); fflush(stderr);
+
+    TRACE_PQSTATUS;
+    if (PQstatus(conn) != CONNECTION_OK) {
+        croak("error connecting %d",PQstatus(conn));
+        goto bail_connect;
+    }
+
+    fprintf(stderr, "# done connecting!\n"); fflush(stderr);
+
+    TRACE_PQSETNONBLOCKING;
+    PQsetnonblocking(conn,1);
+
+    return conn;
+
+bail_connect:
+    fprintf(stderr, "# bail connecting: %s\n",PQerrorMessage(conn)); fflush(stderr);
+    imp_dbh->socket_fd = -1;
+    if (conn) PQfinish(conn);
+    return NULL;
+}
 
 /* end of dbdimp.c */
 

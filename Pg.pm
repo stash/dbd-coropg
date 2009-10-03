@@ -239,6 +239,30 @@ use 5.006001;
 		};
 	}
 
+	sub _coro_init {
+		my $fd = shift;
+                # create a perl filehandle from the file descriptor number
+                open my $fh, "+>&".$fd
+                    or die "Coro::DBD::Pg unable to clone postgres fd";
+                require Coro;
+                require AnyEvent;
+                require Coro::AnyEvent;
+                require Coro::Handle;
+		my $cfh = Coro::Handle->new_from_fh($fh);
+                warn "got $cfh\n";
+                return $cfh;
+	}
+	sub _coro_readable {
+		my $dbh = shift;  # isa DBI::db object durring connect
+		my $cfh = shift;
+		return $cfh->readable;
+	}
+	sub _coro_writable {
+		my $dbh = shift;
+		my $cfh = shift;
+		return $cfh->writable;
+	}
+
 } ## end of package DBD::Pg::dr
 
 

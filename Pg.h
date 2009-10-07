@@ -122,6 +122,7 @@ DBISTATE_DECLARE;
 #define TRACE_PQEXECPARAMS         TRACE_XX "%sPQexecParams\n",          THEADER)
 #define TRACE_PQEXECPREPARED       TRACE_XX "%sPQexecPrepared\n",        THEADER)
 #define TRACE_PQFINISH             TRACE_XX "%sPQfinish\n",              THEADER)
+#define TRACE_PQFLUSH              TRACE_XX "%sPQflush\n",               THEADER)
 #define TRACE_PQFMOD               TRACE_XX "%sPQfmod\n",                THEADER)
 #define TRACE_PQFNAME              TRACE_XX "%sPQfname\n",               THEADER)
 #define TRACE_PQFREECANCEL         TRACE_XX "%sPQfreeCancel\n",          THEADER)

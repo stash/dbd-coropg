@@ -9,6 +9,13 @@
 	License or the Artistic License, as specified in the Perl README file.
 */
 
+typedef enum {
+    COERR_OK = 0,
+    COERR_PGFATAL = 1,      /* postgres failed for some reason; connection now busted */
+    COERR_INTERRUPTED = 2,  /* failed while waiting for read/writability */
+    COERR_EXTRA_RESULT = 3, /* got a second PGresult */
+} coro_error_t;
+
 /* Define drh implementor data structure */
 struct imp_drh_st {
 	dbih_drc_t com; /* MUST be first element in structure */
@@ -42,6 +49,8 @@ struct imp_dbh_st {
 
         int     socket_fd;
         SV      *coro_handle;
+        coro_error_t coro_error;
+        PGresult *coro_next_result;
 };
 
 

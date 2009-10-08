@@ -70,6 +70,7 @@ typedef enum
 	 SvRMAGICAL(SvRV(h)) && (SvMAGIC(SvRV(h)))->mg_type == 'P')
 
 static void pg_error(pTHX_ SV *h, int error_num, const char *error_msg);
+static void _pg_warn (pTHX_ imp_dbh_t *imp_dbh, const char * message, ...);
 static void pg_warn (void * arg, const char * message);
 static ExecStatusType _result(pTHX_ imp_dbh_t *imp_dbh, const char *sql);
 static ExecStatusType _sqlstate(pTHX_ imp_dbh_t *imp_dbh, PGresult *result);
@@ -284,15 +285,19 @@ static void pg_error (pTHX_ SV * h, int error_num, const char * error_msg)
 
 /* ================================================================== */
 /* Turn database notices into perl warnings for proper handling. */
-static void _pg_warn (pTHX_ imp_dbh_t *imp_dbh, const char *message)
+static void _pg_warn (pTHX_ imp_dbh_t *imp_dbh, const char *message, ...)
 {
+	va_list ap;
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_warn (message: %s DBIc_WARN: %d PrintWarn: %d)\n",
 					THEADER,
 					message, DBIc_WARN(imp_dbh) ? 1 : 0,
 					DBIc_is(imp_dbh, DBIcf_PrintWarn) ? 1 : 0);
 
-	if (DBIc_WARN(imp_dbh) && DBIc_is(imp_dbh, DBIcf_PrintWarn))
-		warn(message);
+	if (DBIc_WARN(imp_dbh) && DBIc_is(imp_dbh, DBIcf_PrintWarn)) {
+		va_start(ap,message);
+		vwarn(message, &ap);
+		va_end(ap);
+	}
 
 	if (TEND) TRC(DBILOGFP, "%sEnd pg_warn\n", THEADER);
 }
@@ -5047,57 +5052,59 @@ bail_connect:
 static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 {
     int s = 1;
-    fprintf(stderr, "# coro_flush\n"); fflush(stderr);
+    if (TSTART) TRC(DBILOGFP, "%sBegin coro_flush\n", THEADER);
     while (s == 1) {
         if (CORO_WAIT_FOR_WRITABLE != 1) {
             imp_dbh->coro_error = COERR_INTERRUPTED;
+	    if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (INTERRUPTED)\n", THEADER);
             return -1;
         }
         TRACE_PQFLUSH;
         s = PQflush(imp_dbh->conn);
     }
     if (s == -1) {
-        if (TRACE4) {
-            TRACE_PQERRORMESSAGE;
-            TRC(DBILOGFP, "%sPQflush failed %s\n", THEADER, PQerrorMessage(imp_dbh->conn));
-        }
+	imp_dbh->coro_error = COERR_PGFATAL;
+        TRACE_PQERRORMESSAGE;
+        _pg_warn(aTHX_ imp_dbh, "PQflush failed: %s", PQerrorMessage(imp_dbh->conn));
     }
+    if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (%d)\n", THEADER, s);
     return s;
 }
 
 static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 {
-    fprintf(stderr, "# coro_read_result\n"); fflush(stderr);
+    PGresult *result = NULL;
+    if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_result\n", THEADER);
 
     TRACE_PQISBUSY;
-    if (!PQisBusy(imp_dbh->conn)) {
-        fprintf(stderr, "# result shortcut\n"); fflush(stderr);
-        TRACE_PQGETRESULT;
-        return PQgetResult(imp_dbh->conn);
-    }
-
-    do {
+    while (PQisBusy(imp_dbh->conn)) {
         if (CORO_WAIT_FOR_READABLE != 1) {
             imp_dbh->coro_error = COERR_INTERRUPTED;
-            goto bail_coro_read_result;
+            goto finish_coro_read_result;
         }
+
         TRACE_PQCONSUMEINPUT;
         if (!PQconsumeInput(imp_dbh->conn)) {
-            if (TRACE4) {
-                imp_dbh->coro_error = COERR_PGFATAL;
-                TRACE_PQERRORMESSAGE;
-                TRC(DBILOGFP, "%sPQconsumeInput failed during coro_read_result %s\n", THEADER, PQerrorMessage(imp_dbh->conn));
-            }
-            goto bail_coro_read_result;
+	    imp_dbh->coro_error = COERR_PGFATAL;
+            TRACE_PQERRORMESSAGE;
+	    _pg_warn(aTHX_ imp_dbh, "PQconsumeInput failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
+            goto finish_coro_read_result;
         }
-        TRACE_PQISBUSY;
-    } while (PQisBusy(imp_dbh->conn));
+
+        TRACE_PQISBUSY; // for the next iteration
+    }
 
     TRACE_PQGETRESULT;
-    return PQgetResult(imp_dbh->conn);
+    result = PQgetResult(imp_dbh->conn);
+    if (!result) {
+	imp_dbh->coro_error = COERR_PGFATAL;
+        TRACE_PQERRORMESSAGE;
+	_pg_warn(aTHX_ imp_dbh, "PQgetResult failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
+    }
 
-bail_coro_read_result:
-    return NULL;
+finish_coro_read_result:
+    if (TEND) TRC(DBILOGFP, "%sEnd coro_read_result\n", THEADER);
+    return result;
 }
 
 static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
@@ -5106,25 +5113,26 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
     PGresult *result = NULL;
     PGresult *next_result = NULL;
 
-    if (imp_dbh->coro_error != COERR_OK) return NULL;
+    if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexec\n", THEADER);
+
+    if (imp_dbh->coro_error != COERR_OK) {
+        goto finish_coro_PQexec;
+    }
 
     TRACE_PQSENDQUERY;
     if (!PQsendQuery(imp_dbh->conn, sql)) {
-        if (TRACE4) {
-            TRACE_PQERRORMESSAGE;
-            TRC(DBILOGFP, "%sPQsendQuery failed during coro_PQexec %s\n", THEADER, PQerrorMessage((imp_dbh)->conn));
-        }
-        goto bail_coro_PQexec;
+        imp_dbh->coro_error = COERR_PGFATAL;
+        TRACE_PQERRORMESSAGE;
+        _pg_warn(aTHX_ imp_dbh, "PQsendQuery failed during coro_PQexec: %s", PQerrorMessage(imp_dbh->conn));
+        goto finish_coro_PQexec;
     }
 
-    if (coro_flush(aTHX_ imp_dbh)) {
-        goto bail_coro_PQexec;
-    }
+    if (coro_flush(aTHX_ imp_dbh) != 0)
+        goto finish_coro_PQexec;
 
     result = coro_read_result(aTHX_ imp_dbh);
-    if (!result) {
-        goto bail_coro_PQexec;
-    }
+    if (!result)
+        goto finish_coro_PQexec;
 
     // libpq goes into an error state if we don't check for additional
     // results.
@@ -5138,12 +5146,10 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
         imp_dbh->coro_next_result = NULL;
         imp_dbh->coro_error = COERR_OK;
     }
-    return result;
 
-bail_coro_PQexec:
-    if (!imp_dbh->coro_error) 
-        imp_dbh->coro_error = COERR_FATAL;
-    return NULL;
+finish_coro_PQexec:
+    if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexec (%s)\n", THEADER, _error_message(imp_dbh));
+    return result;
 }
 
 static const char const *_error_message(const imp_dbh_t *imp_dbh)

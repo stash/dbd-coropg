@@ -85,7 +85,7 @@ static int handle_old_async(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const int as
 
 static const char const *_error_message(const imp_dbh_t *imp_dbh);
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str);
-static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh);
+static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh, bool expected);
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
 static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh);
 static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
@@ -375,7 +375,7 @@ static ExecStatusType _sqlstate(pTHX_ imp_dbh_t * imp_dbh, PGresult * result)
 		while (imp_dbh->coro_next_result) {
 			TRACE_PQCLEAR;
 			PQclear(imp_dbh->coro_next_result);
-			imp_dbh->coro_next_result = coro_read_result(aTHX_ imp_dbh);
+			imp_dbh->coro_next_result = coro_read_result(aTHX_ imp_dbh, false);
 		}
 		if (imp_dbh->coro_error != COERR_OK) {
 			_pg_warn(aTHX_ imp_dbh, "Further errors encountered while clearing extra results; there may be leaked memory now");
@@ -5071,7 +5071,7 @@ static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
     return s;
 }
 
-static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
+static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh, bool expected)
 {
     PGresult *result = NULL;
     if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_result\n", THEADER);
@@ -5096,7 +5096,7 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 
     TRACE_PQGETRESULT;
     result = PQgetResult(imp_dbh->conn);
-    if (!result) {
+    if (expected && !result) {
 	imp_dbh->coro_error = COERR_PGFATAL;
         TRACE_PQERRORMESSAGE;
 	_pg_warn(aTHX_ imp_dbh, "PQgetResult failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
@@ -5130,13 +5130,13 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
     if (coro_flush(aTHX_ imp_dbh) != 0)
         goto finish_coro_PQexec;
 
-    result = coro_read_result(aTHX_ imp_dbh);
+    result = coro_read_result(aTHX_ imp_dbh, true);
     if (!result)
         goto finish_coro_PQexec;
 
     // libpq goes into an error state if we don't check for additional
     // results.
-    next_result = coro_read_result(aTHX_ imp_dbh);
+    next_result = coro_read_result(aTHX_ imp_dbh, false);
 
     if (next_result) {
         imp_dbh->coro_next_result = next_result;

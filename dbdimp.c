@@ -69,10 +69,9 @@ typedef enum
 	(SvROK(h) && SvTYPE(SvRV(h)) == SVt_PVHV &&					\
 	 SvRMAGICAL(SvRV(h)) && (SvMAGIC(SvRV(h)))->mg_type == 'P')
 
-static const char const *_error_message(const imp_dbh_t *imp_dbh);
 static void pg_error(pTHX_ SV *h, int error_num, const char *error_msg);
 static void pg_warn (void * arg, const char * message);
-static ExecStatusType _result(pTHX_ SV *handle, imp_dbh_t *imp_dbh, const char *sql);
+static ExecStatusType _result(pTHX_ imp_dbh_t *imp_dbh, const char *sql);
 static ExecStatusType _sqlstate(pTHX_ imp_dbh_t *imp_dbh, PGresult *result);
 static int pg_db_rollback_commit (pTHX_ SV *dbh, imp_dbh_t *imp_dbh, int action);
 static void pg_st_split_statement (pTHX_ imp_sth_t *imp_sth, int version, char *statement);
@@ -83,12 +82,12 @@ static PGTransactionStatusType pg_db_txn_status (pTHX_ imp_dbh_t *imp_dbh);
 static int pg_db_start_txn (pTHX_ SV *dbh, imp_dbh_t *imp_dbh);
 static int handle_old_async(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const int asyncflag);
 
+static const char const *_error_message(const imp_dbh_t *imp_dbh);
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str);
+static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh);
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
 static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh);
 static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
-static void coro_clear_results(pTHX_ imp_dbh_t *imp_dbh);
-static int coro_check_error(pTHX_ SV *handle, imp_dbh_t *imp_dbh, PGresult *result);
 
 /* ================================================================== */
 void dbd_init (dbistate_t *dbistate)
@@ -285,6 +284,19 @@ static void pg_error (pTHX_ SV * h, int error_num, const char * error_msg)
 
 /* ================================================================== */
 /* Turn database notices into perl warnings for proper handling. */
+static void _pg_warn (pTHX_ imp_dbh_t *imp_dbh, const char *message)
+{
+	if (TSTART) TRC(DBILOGFP, "%sBegin pg_warn (message: %s DBIc_WARN: %d PrintWarn: %d)\n",
+					THEADER,
+					message, DBIc_WARN(imp_dbh) ? 1 : 0,
+					DBIc_is(imp_dbh, DBIcf_PrintWarn) ? 1 : 0);
+
+	if (DBIc_WARN(imp_dbh) && DBIc_is(imp_dbh, DBIcf_PrintWarn))
+		warn(message);
+
+	if (TEND) TRC(DBILOGFP, "%sEnd pg_warn\n", THEADER);
+}
+
 static void pg_warn (void * arg, const char * message)
 {
 	dTHX;
@@ -308,16 +320,7 @@ static void pg_warn (void * arg, const char * message)
 	}
 	else {
 		D_imp_dbh(tmp);
-
-		if (TSTART) TRC(DBILOGFP, "%sBegin pg_warn (message: %s DBIc_WARN: %d PrintWarn: %d)\n",
-						THEADER,
-						message, DBIc_WARN(imp_dbh) ? 1 : 0,
-						DBIc_is(imp_dbh, DBIcf_PrintWarn) ? 1 : 0);
-
-		if (DBIc_WARN(imp_dbh) && DBIc_is(imp_dbh, DBIcf_PrintWarn))
-			warn(message);
-
-		if (TEND) TRC(DBILOGFP, "%sEnd pg_warn\n", THEADER);
+		_pg_warn(aTHX_ imp_dbh, message);
 	}
 
 } /* end of pg_warn */
@@ -325,7 +328,7 @@ static void pg_warn (void * arg, const char * message)
 
 /* ================================================================== */
 /* Quick command executor used throughout this file */
-static ExecStatusType _result(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const char * sql)
+static ExecStatusType _result(pTHX_ imp_dbh_t * imp_dbh, const char * sql)
 {
 	PGresult *     result;
 	ExecStatusType status;
@@ -336,7 +339,6 @@ static ExecStatusType _result(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const char
 
         result = coro_PQexec(aTHX_ imp_dbh, sql);
 	status = _sqlstate(aTHX_ imp_dbh, result);
-	coro_check_error(aTHX_ handle, imp_dbh, NULL);
 
 	TRACE_PQCLEAR;
 	PQclear(result);
@@ -356,18 +358,30 @@ static ExecStatusType _sqlstate(pTHX_ imp_dbh_t * imp_dbh, PGresult * result)
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin _sqlstate\n", THEADER);
 
-        switch (imp_dbh->coro_error) {
-        case COERR_OK:
-                break;
-        case COERR_INTERRUPTED:
-                strncpy(imp_dbh->sqlstate, "58030", 6); /* IO ERROR */
-                status = PGRES_FATAL_ERROR;
-                goto finish_sqlstate;
-        default:
-                strncpy(imp_dbh->sqlstate, "08000", 6); /* CONNECTION EXCEPTION */
-                status = PGRES_FATAL_ERROR;
-                goto finish_sqlstate;
-        }
+	switch (imp_dbh->coro_error) {
+	case COERR_OK:
+		break;
+	case COERR_INTERRUPTED:
+		strncpy(imp_dbh->sqlstate, "58030", 6); /* IO ERROR */
+		status = PGRES_FATAL_ERROR;
+		goto finish_sqlstate;
+	case COERR_EXTRA_RESULT:
+		imp_dbh->coro_error = COERR_OK;
+		while (imp_dbh->coro_next_result) {
+			TRACE_PQCLEAR;
+			PQclear(imp_dbh->coro_next_result);
+			imp_dbh->coro_next_result = coro_read_result(aTHX_ imp_dbh);
+		}
+		if (imp_dbh->coro_error != COERR_OK) {
+			_pg_warn(aTHX_ imp_dbh, "Further errors encountered while clearing extra results; there may be leaked memory now");
+		}
+		imp_dbh->coro_error = COERR_EXTRA_RESULT;
+		/*@fallthrough@*/
+	default:
+		strncpy(imp_dbh->sqlstate, "08000", 6); /* CONNECTION EXCEPTION */
+		status = PGRES_FATAL_ERROR;
+		goto finish_sqlstate;
+	}
 
 	if (result) {
 		TRACE_PQRESULTSTATUS;
@@ -378,7 +392,7 @@ static ExecStatusType _sqlstate(pTHX_ imp_dbh_t * imp_dbh, PGresult * result)
 	  Because PQresultErrorField may not work completely when an error occurs, and 
 	  we are connecting over TCP/IP, only set it here if non-null, and fall through 
 	  to a better default value below.
-    */
+	*/
 	if (result) {
 		TRACE_PQRESULTERRORFIELD;
 		if (NULL != PQresultErrorField(result,PG_DIAG_SQLSTATE)) {
@@ -464,7 +478,7 @@ int dbd_db_ping (SV * dbh)
 
 	/* Even though it may be reported as normal, we have to make sure by issuing a command */
 
-	status = _result(aTHX_ dbh, imp_dbh, "SELECT 'DBD::Pg ping test'");
+	status = _result(aTHX_ imp_dbh, "SELECT 'DBD::Pg ping test'");
 
 	if (PGRES_TUPLES_OK == status) {
 		if (TEND) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: 1 PGRES_TUPLES_OK)\n", THEADER);
@@ -550,7 +564,7 @@ static int pg_db_rollback_commit (pTHX_ SV * dbh, imp_dbh_t * imp_dbh, int actio
 		return 1;
 	}
 
-	status = _result(aTHX_ dbh, imp_dbh, action ? "commit" : "rollback");
+	status = _result(aTHX_ imp_dbh, action ? "commit" : "rollback");
 		
 	/* Set this early, for scripts that continue despite the error below */
 	imp_dbh->done_begin = DBDPG_FALSE;
@@ -1178,9 +1192,11 @@ SV * dbd_st_FETCH_attrib (SV * sth, imp_sth_t * imp_sth, SV * keysv)
 					}
 					TRACE_PQCLEAR;
 					PQclear(result);
+					if (imp_dbh->coro_error) break;
 				}
 				(void)av_store(av, fields, newSViv(nullable));
 			}
+			retsv = newRV(sv_2mortal((SV*)av));
 		}
 		break;
 
@@ -2133,7 +2149,7 @@ static int pg_st_prepare_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 		TRC(DBILOGFP, "%sPrepared statement (%s)\n", THEADER, statement);
 
 	if (oldprepare) {
-		status = _result(aTHX_ sth, imp_dbh, statement);
+		status = _result(aTHX_ imp_dbh, statement);
 	}
 	else {
 		int params = 0;
@@ -2720,7 +2736,7 @@ int pg_quickexec (SV * dbh, const char * sql, const int asyncflag)
 
 	/* If not autocommit, start a new transaction */
 	if (!imp_dbh->done_begin && !DBIc_has(imp_dbh, DBIcf_AutoCommit)) {
-		status = _result(aTHX_ dbh, imp_dbh, "begin");
+		status = _result(aTHX_ imp_dbh, "begin");
 		if (PGRES_COMMAND_OK != status) {
 			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
 			if (TEND) TRC(DBILOGFP, "%sEnd pg_quickexec (error: begin failed)\n", THEADER);
@@ -2729,7 +2745,7 @@ int pg_quickexec (SV * dbh, const char * sql, const int asyncflag)
 		imp_dbh->done_begin = DBDPG_TRUE;
 		/* If read-only mode, make it so */
 		if (imp_dbh->txn_read_only) {
-			status = _result(aTHX_ dbh, imp_dbh, "set transaction read only");
+			status = _result(aTHX_ imp_dbh, "set transaction read only");
 			if (PGRES_COMMAND_OK != status) {
 				pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
 				if (TEND) TRC(DBILOGFP, "%sEnd pg_quickexec (error: set transaction read only failed)\n", THEADER);
@@ -2892,7 +2908,7 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 
 	/* If not autocommit, start a new transaction */
 	if (!imp_dbh->done_begin && !DBIc_has(imp_dbh, DBIcf_AutoCommit)) {
-		status = _result(aTHX_ sth, imp_dbh, "begin");
+		status = _result(aTHX_ imp_dbh, "begin");
 		if (PGRES_COMMAND_OK != status) {
 			pg_error(aTHX_ sth, status, _error_message(imp_dbh));
 			if (TEND) TRC(DBILOGFP, "%sEnd dbd_st_execute (error: begin failed)\n", THEADER);
@@ -2901,7 +2917,7 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 		imp_dbh->done_begin = DBDPG_TRUE;
 		/* If read-only mode, make it so */
 		if (imp_dbh->txn_read_only) {
-			status = _result(aTHX_ sth, imp_dbh, "set transaction read only");
+			status = _result(aTHX_ imp_dbh, "set transaction read only");
 			if (PGRES_COMMAND_OK != status) {
 				pg_error(aTHX_ sth, status, _error_message(imp_dbh));
 				if (TEND) TRC(DBILOGFP, "%sEnd pg_quickexec (error: set transaction read only failed)\n", THEADER);
@@ -3569,11 +3585,11 @@ static int pg_st_deallocate_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 					TRC(DBILOGFP, "%sRolling back to savepoint %s\n", THEADER, SvPV_nolen(sp));
 				sprintf(cmd, "rollback to %s", SvPV_nolen(sp));
 				strncpy(tempsqlstate, imp_dbh->sqlstate, strlen(imp_dbh->sqlstate)+1);
-				status = _result(aTHX_ sth, imp_dbh, cmd);
+				status = _result(aTHX_ imp_dbh, cmd);
 				Safefree(cmd);
 			}
 			else {
-				status = _result(aTHX_ sth, imp_dbh, "ROLLBACK");
+				status = _result(aTHX_ imp_dbh, "ROLLBACK");
 				imp_dbh->done_begin = DBDPG_FALSE;
 			}
 		}
@@ -3592,7 +3608,7 @@ static int pg_st_deallocate_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 	if (TRACE5)
 		TRC(DBILOGFP, "%sDeallocating (%s)\n", THEADER, imp_sth->prepare_name);
 
-	status = _result(aTHX_ sth, imp_dbh, stmt);
+	status = _result(aTHX_ imp_dbh, stmt);
 	Safefree(stmt);
 	if (PGRES_COMMAND_OK != status) {
 		pg_error(aTHX_ sth, status, _error_message(imp_dbh));
@@ -4029,7 +4045,7 @@ int pg_db_savepoint (SV * dbh, imp_dbh_t * imp_dbh, char * savepoint)
 
 	/* Start a new transaction if this is the first command */
 	if (!imp_dbh->done_begin) {
-		status = _result(aTHX_ dbh, imp_dbh, "begin");
+		status = _result(aTHX_ imp_dbh, "begin");
 		if (PGRES_COMMAND_OK != status) {
 			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
 			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_savepoint (error: status not OK for begin)\n", THEADER);
@@ -4040,7 +4056,7 @@ int pg_db_savepoint (SV * dbh, imp_dbh_t * imp_dbh, char * savepoint)
 
 	New(0, action, strlen(savepoint) + 11, char); /* freed below */
 	sprintf(action, "savepoint %s", savepoint);
-	status = _result(aTHX_ dbh, imp_dbh, action);
+	status = _result(aTHX_ imp_dbh, action);
 	Safefree(action);
 
 	if (PGRES_COMMAND_OK != status) {
@@ -4076,7 +4092,7 @@ int pg_db_rollback_to (SV * dbh, imp_dbh_t * imp_dbh, const char *savepoint)
 
 	New(0, action, strlen(savepoint) + 13, char);
 	sprintf(action, "rollback to %s", savepoint);
-	status = _result(aTHX_ dbh, imp_dbh, action);
+	status = _result(aTHX_ imp_dbh, action);
 	Safefree(action);
 
 	if (PGRES_COMMAND_OK != status) {
@@ -4112,7 +4128,7 @@ int pg_db_release (SV * dbh, imp_dbh_t * imp_dbh, char * savepoint)
 
 	New(0, action, strlen(savepoint) + 9, char);
 	sprintf(action, "release %s", savepoint);
-	status = _result(aTHX_ dbh, imp_dbh, action);
+	status = _result(aTHX_ imp_dbh, action);
 	Safefree(action);
 
 	if (PGRES_COMMAND_OK != status) {
@@ -4138,7 +4154,7 @@ static int pg_db_start_txn (pTHX_ SV * dbh, imp_dbh_t * imp_dbh)
 
 	/* If not autocommit, start a new transaction */
 	if (!imp_dbh->done_begin) {
-		status = _result(aTHX_ dbh, imp_dbh, "begin");
+		status = _result(aTHX_ imp_dbh, "begin");
 		if (PGRES_COMMAND_OK != status) {
 			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
 			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_start_txn (error: status not OK for begin)\n", THEADER);
@@ -4163,7 +4179,7 @@ static int pg_db_end_txn (pTHX_ SV * dbh, imp_dbh_t * imp_dbh, int commit)
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_end_txn with %s\n",
 					THEADER, commit ? "commit" : "rollback");
 
-	status = _result(aTHX_ dbh, imp_dbh, commit ? "commit" : "rollback");
+	status = _result(aTHX_ imp_dbh, commit ? "commit" : "rollback");
 	imp_dbh->done_begin = DBDPG_FALSE;
 	if (PGRES_COMMAND_OK != status) {
 		pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
@@ -5131,15 +5147,6 @@ bail_coro_PQexec:
     return NULL;
 }
 
-static void coro_clear_results (pTHX_ imp_dbh_t *imp_dbh)
-{
-    while (imp_dbh->coro_next_result) {
-        TRACE_PQCLEAR;
-        PQclear(imp_dbh->coro_next_result);
-        imp_dbh->coro_next_result = coro_read_result(aTHX_ imp_dbh);
-    }
-}
-
 static const char const *_error_message(const imp_dbh_t *imp_dbh)
 {
 	// disabled: only needed for TRACE_PQERRORMESSAGE
@@ -5157,33 +5164,6 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh)
 		return "Fatal error during non-blocking wait.";
 	}
 	return NULL;
-}
-
-static int coro_check_error(pTHX_ SV *handle, imp_dbh_t *imp_dbh, PGresult *result)
-{
-
-	if (imp_dbh->coro_error == COERR_OK) {
-		return DBDPG_FALSE;
-	}
-
-	switch (imp_dbh->coro_error) {
-	case COERR_EXTRA_RESULT:
-		if (result) {
-			TRACE_PQCLEAR;
-			PQclear(result);
-		}
-		imp_dbh->coro_error = COERR_OK;
-		coro_clear_results(aTHX_ imp_dbh);
-		if (imp_dbh->coro_error != COERR_OK) {
-			pg_warn(handle,"Further errors encountered while clearing extra results; there may be leaked memory now");
-		}
-		imp_dbh->coro_error = COERR_EXTRA_RESULT;
-		break;
-	default:
-		break;
-	}
-
-	return DBDPG_TRUE;
 }
 
 /* end of dbdimp.c */

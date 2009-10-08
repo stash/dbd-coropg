@@ -10,10 +10,11 @@
 */
 
 typedef enum {
-    COERR_OK = 0,
-    COERR_PGFATAL = 1,      /* postgres failed for some reason; connection now busted */
-    COERR_INTERRUPTED = 2,  /* failed while waiting for read/writability */
-    COERR_EXTRA_RESULT = 3, /* got a second PGresult */
+	COERR_OK = 0,
+	COERR_FATAL,
+	COERR_PGFATAL,      /* postgres failed for some reason; connection now busted */
+	COERR_INTERRUPTED,  /* failed while waiting for read/writability */
+	COERR_EXTRA_RESULT, /* got a second PGresult */
 } coro_error_t;
 
 /* Define drh implementor data structure */
@@ -254,3 +255,4 @@ int pg_db_cancel (SV *h, imp_dbh_t *imp_dbh);
 int pg_db_cancel_sth (SV *sth, imp_sth_t *imp_sth);
 
 /* end of dbdimp.h */
+/* vim: noet sts=0 ts=8 sw=8 */

@@ -2778,8 +2778,7 @@ int pg_quickexec (SV * dbh, const char * sql, const int asyncflag)
 
 	if (TSQL) TRC(DBILOGFP, "%s;\n\n", sql);
 
-	TRACE_PQEXEC;
-	result = PQexec(imp_dbh->conn, sql);
+	result = coro_PQexec(aTHX_ imp_dbh, sql);
 	status = _sqlstate(aTHX_ imp_dbh, result);
 
 	imp_dbh->copystate = 0; /* Assume not in copy mode until told otherwise */

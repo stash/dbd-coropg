@@ -3207,7 +3207,7 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 			}
 			else {
 				TRACE_PQEXEC;
-				imp_sth->result = PQexec(imp_dbh->conn, statement);
+				imp_sth->result = coro_PQexec(aTHX_ imp_dbh, statement);
 			}
 
 		} /* end PQexec */

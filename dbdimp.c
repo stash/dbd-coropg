@@ -443,6 +443,11 @@ int dbd_db_ping (SV * dbh)
 		return -1;
 	}
 
+	if (imp_dbh->coro_error != COERR_OK) {
+		if (TEND) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: -4 coro error)\n", THEADER);
+		return -4;
+	}
+
 	tstatus = pg_db_txn_status(aTHX_ imp_dbh);
 
 	if (TRACE5) TRC(DBILOGFP, "%sdbd_db_ping txn_status is %d\n", THEADER, tstatus);

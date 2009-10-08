@@ -5142,11 +5142,13 @@ static void coro_clear_results (pTHX_ imp_dbh_t *imp_dbh)
 
 static const char const *_error_message(const imp_dbh_t *imp_dbh)
 {
+	// disabled: only needed for TRACE_PQERRORMESSAGE
+	// dTHX;
 	switch (imp_dbh->coro_error) {
 	case COERR_OK:
 	case COERR_PGFATAL:
-		TRACE_PQERRORMESSAGE;
-		return PQerrorMessage((imp_dbh)->conn);
+		// TRACE_PQERRORMESSAGE; 
+		return PQerrorMessage(imp_dbh->conn);
 	case COERR_EXTRA_RESULT:
 		return "Got an unexpected extra result!";
 	case COERR_INTERRUPTED:

@@ -1173,13 +1173,13 @@ SV * dbd_st_FETCH_attrib (SV * sth, imp_sth_t * imp_sth, SV * keysv)
 				TRACE_PQFTABLECOL;
 				y = PQftablecol(imp_sth->result, fields);
 				if (InvalidOid != x && y > 0) { /* We know what table and column this came from */
+					/* XXX: should this be turned into a placeholder-style statement? */
 					char statement[128];
 					snprintf(statement, sizeof(statement),
 							"SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid=%d AND attnum=%d", x, y);
 					TRACE_PQEXEC;
-					result = PQexec(imp_dbh->conn, statement);
-					TRACE_PQRESULTSTATUS;
-					status = PQresultStatus(result);
+					result = coro_PQexec(aTHX_ imp_dbh, statement);
+					status = _sqlstate(aTHX_ imp_dbh, result);
 					if (PGRES_TUPLES_OK == status) {
 						TRACE_PQNTUPLES;
 						if (PQntuples(result)!=0) {
@@ -1195,13 +1195,14 @@ SV * dbd_st_FETCH_attrib (SV * sth, imp_sth_t * imp_sth, SV * keysv)
 							}
 						}
 					}
-					TRACE_PQCLEAR;
-					PQclear(result);
-					if (imp_dbh->coro_error) break;
+					if (result) {
+						TRACE_PQCLEAR;
+						PQclear(result);
+					}
+					if (PGRES_FATAL_ERROR == status) break; // while fields
 				}
 				(void)av_store(av, fields, newSViv(nullable));
 			}
-			retsv = newRV(sv_2mortal((SV*)av));
 		}
 		break;
 

@@ -110,7 +110,7 @@ int dbd_db_login (SV * dbh, imp_dbh_t * imp_dbh, char * dbname, char * uid, char
 	ConnStatusType connstatus;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin dbd_db_login\n", THEADER);
-  
+
 	/* DBD::Pg syntax: 'dbname=dbname;host=host;port=port', 'User', 'Pass' */
 	/* libpq syntax: 'dbname=dbname host=host port=port user=uid password=pwd' */
 
@@ -229,7 +229,7 @@ int dbd_db_login (SV * dbh, imp_dbh_t * imp_dbh, char * dbname, char * uid, char
 
 	imp_dbh->pg_bool_tf      = DBDPG_FALSE;
 	imp_dbh->pg_enable_utf8  = DBDPG_FALSE;
- 	imp_dbh->prepare_now     = DBDPG_FALSE;
+	imp_dbh->prepare_now     = DBDPG_FALSE;
 	imp_dbh->done_begin      = DBDPG_FALSE;
 	imp_dbh->dollaronly      = DBDPG_FALSE;
 	imp_dbh->expand_array    = DBDPG_TRUE;
@@ -342,7 +342,7 @@ static ExecStatusType _result(pTHX_ imp_dbh_t * imp_dbh, const char * sql)
 
 	if (TSQL) TRC(DBILOGFP, "%s;\n\n", sql);
 
-        result = coro_PQexec(aTHX_ imp_dbh, sql);
+	result = coro_PQexec(aTHX_ imp_dbh, sql);
 	status = _sqlstate(aTHX_ imp_dbh, result);
 
 	TRACE_PQCLEAR;
@@ -609,7 +609,7 @@ int dbd_db_rollback (SV * dbh, imp_dbh_t * imp_dbh)
 /* ================================================================== */
 int dbd_db_disconnect (SV * dbh, imp_dbh_t * imp_dbh)
 {
-   	dTHX;
+	dTHX;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin dbd_db_disconnect\n", THEADER);
 
@@ -662,7 +662,7 @@ void dbd_db_destroy (SV * dbh, imp_dbh_t * imp_dbh)
 	sv_free((SV *)imp_dbh->savepoints);
 	Safefree(imp_dbh->sqlstate);
 
-        coro_cleanup(aTHX_ imp_dbh);
+	coro_cleanup(aTHX_ imp_dbh);
 
 	DBIc_IMPSET_off(imp_dbh);
 
@@ -1405,7 +1405,7 @@ SV * pg_db_pg_notifies (SV * dbh, imp_dbh_t * imp_dbh)
 	/* Think about utf-8 in payloads someday... */
 	
 	TRACE_PQFREEMEM;
- 	PQfreemem(notify);
+	PQfreemem(notify);
 
 	retsv = newRV(sv_2mortal((SV*)ret));
 
@@ -1574,7 +1574,7 @@ static void pg_st_split_statement (pTHX_ imp_sth_t * imp_sth, int version, char 
 
 	int placeholder_type; /* Which type we are in: one of 0,1,2,3 (none,?,$,:) */
 
- 	unsigned char ch; /* The current character being checked */
+	unsigned char ch; /* The current character being checked */
 
 	char quote; /* Current quote or comment character: used only in those two blocks */
 
@@ -1731,8 +1731,8 @@ static void pg_st_split_statement (pTHX_ imp_sth_t * imp_sth, int version, char 
 			 || (*statement >= 'A' && *statement <= 'Z') 
 			 || (*statement >= 'a' && *statement <= 'z'))) {
 			/* "SQL identifiers must begin with a letter (a-z, but also letters with diacritical marks and non-Latin letters) 
-                or an underscore (_). Subsequent characters in an identifier or key word can be letters, underscores, 
-                digits (0-9), or dollar signs ($)
+			   or an underscore (_). Subsequent characters in an identifier or key word can be letters, underscores, 
+			   digits (0-9), or dollar signs ($)
 			*/
 			/* Postgres technically allows \200-\377 as well, but we don't */
 			sectionsize = 0; /* How far from the first dollar sign are we? */
@@ -2215,7 +2215,7 @@ int dbd_bind_ph (SV * sth, imp_sth_t * imp_sth, SV * ph_name, SV * newvalue, IV 
 	char * value_string = NULL;
 	bool   is_array = DBDPG_FALSE;
 
-   	maxlen = 0; /* not used, this makes the compiler happy */
+	maxlen = 0; /* not used, this makes the compiler happy */
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin dbd_bind_ph (ph_name: %s)\n",
 					THEADER,
@@ -2350,9 +2350,9 @@ int dbd_bind_ph (SV * sth, imp_sth_t * imp_sth, SV * ph_name, SV * newvalue, IV 
 	}
 	else if (sql_type) {
 		/* always bind as pg_type, because we know we are 
-           inserting into a pg database... It would make no 
-           sense to quote something to sql semantics and break
-           the insert.
+		   inserting into a pg database... It would make no 
+		   sense to quote something to sql semantics and break
+		   the insert.
 		*/
 		if (!(currph->bind_type = sql_type_data((int)sql_type))) {
 			croak("Cannot bind param %s: unknown sql_type %ld", name, (long)sql_type);
@@ -2360,7 +2360,7 @@ int dbd_bind_ph (SV * sth, imp_sth_t * imp_sth, SV * ph_name, SV * newvalue, IV 
 		if (!(currph->bind_type = pg_type_data(currph->bind_type->type.pg))) {
 			croak("Cannot find a pg_type for %ld", (long)sql_type);
 		}
- 	}
+	}
 	else if (NULL == currph->bind_type) { /* "sticky" data type */
 		/* This is the default type, but we will honor defaultval if we can */
 		currph->bind_type = pg_type_data(PG_UNKNOWN);
@@ -2811,7 +2811,7 @@ int pg_quickexec (SV * dbh, const char * sql, const int asyncflag)
 			rows = atoi(cmdStatus + 5);
 		}
 		else if (0 == strncmp(cmdStatus, "DELETE", 6)
- 			  || 0 == strncmp(cmdStatus, "UPDATE", 6)) {
+			 || 0 == strncmp(cmdStatus, "UPDATE", 6)) {
 			rows = atoi(cmdStatus + 7);
 		}
 		break;
@@ -3702,7 +3702,7 @@ void dbd_st_destroy (SV * sth, imp_sth_t * imp_sth)
 		Safefree(currph->fooname);
 		Safefree(currph->value);
 		Safefree(currph->quoted);
- 		currph->bind_type = NULL;
+		currph->bind_type = NULL;
 		nextph = currph->nextph;
 		Safefree(currph);
 		currph = nextph;
@@ -4880,60 +4880,55 @@ static int handle_old_async(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const int as
 /*
 Some information to keep you sane:
 typedef enum
-{
-	PGRES_EMPTY_QUERY = 0,		// empty query string was executed 
-1	PGRES_COMMAND_OK,			// a query command that doesn't return
-								   anything was executed properly by the
-								   backend 
-2	PGRES_TUPLES_OK,			// a query command that returns tuples was
-								   executed properly by the backend, PGresult
-								   contains the result tuples 
-3	PGRES_COPY_OUT,				// Copy Out data transfer in progress 
-4	PGRES_COPY_IN,				// Copy In data transfer in progress 
-5	PGRES_BAD_RESPONSE,			// an unexpected response was recv'd from the
-								   backend 
-6	PGRES_NONFATAL_ERROR,		// notice or warning message 
-7	PGRES_FATAL_ERROR			// query failed 
+{	
+0	PGRES_EMPTY_QUERY = 0,  // empty query string was executed 
+1	PGRES_COMMAND_OK,      // a query command that doesn't return anything was executed properly by the backend 
+2	PGRES_TUPLES_OK,       // a query command that returns tuples was executed properly by the backend, PGresult contains the result tuples 
+3	PGRES_COPY_OUT,	       // Copy Out data transfer in progress 
+4	PGRES_COPY_IN,	       // Copy In data transfer in progress 
+5	PGRES_BAD_RESPONSE,    // an unexpected response was recv'd from the backend 
+6	PGRES_NONFATAL_ERROR,  // notice or warning message 
+7	PGRES_FATAL_ERROR      // query failed 
 } ExecStatusType;
 
 */
 
 static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh)
 {
-    dSP;
-    fprintf(stderr, "# coro init\n"); fflush(stderr);
+	dSP;
+	fprintf(stderr, "# coro init\n"); fflush(stderr);
 
-    ENTER;
-    SAVETMPS;
+	ENTER;
+	SAVETMPS;
 
-    PUSHMARK(SP);
-    XPUSHs(sv_2mortal(newSViv(imp_dbh->socket_fd)));
-    PUTBACK;
-    call_pv("DBD::Pg::dr::_coro_init", G_SCALAR|G_EVAL);
-    SPAGAIN;
+	PUSHMARK(SP);
+	XPUSHs(sv_2mortal(newSViv(imp_dbh->socket_fd)));
+	PUTBACK;
+	call_pv("DBD::Pg::dr::_coro_init", G_SCALAR|G_EVAL);
+	SPAGAIN;
 
-    if (SvTRUE(ERRSV)) {
-        /* XXX: cop-out error handling; croak never returns */
-        /* ideally pass ERRSV up to the perl stack */
-        croak("error in coro init: %s", SvPVX(ERRSV));
-    }
-    else {
-        imp_dbh->coro_handle = POPs;
-        SvREFCNT_inc(imp_dbh->coro_handle);
-    }
+	if (SvTRUE(ERRSV)) {
+		/* XXX: cop-out error handling; croak never returns */
+		/* ideally pass ERRSV up to the perl stack */
+		croak("error in coro init: %s", SvPVX(ERRSV));
+	}
+	else {
+		imp_dbh->coro_handle = POPs;
+		SvREFCNT_inc(imp_dbh->coro_handle);
+	}
 
-    FREETMPS;
-    LEAVE;
+	FREETMPS;
+	LEAVE;
 
-    return imp_dbh->coro_handle;
+	return imp_dbh->coro_handle;
 }
 
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh)
 {
-    if (imp_dbh->coro_handle) {
-        SvREFCNT_dec(imp_dbh->coro_handle);
-        imp_dbh->coro_handle = NULL;
-    }
+	if (imp_dbh->coro_handle) {
+		SvREFCNT_dec(imp_dbh->coro_handle);
+		imp_dbh->coro_handle = NULL;
+	}
 }
 
 static const char *READABLE = "DBD::Pg::dr::_coro_readable";
@@ -4943,214 +4938,214 @@ static const char *WRITABLE = "DBD::Pg::dr::_coro_writable";
 
 static int coro_wait_for (pTHX_ imp_dbh_t *imp_dbh, const char *func) 
 {
-    dSP;
-    int c;
-    int result = 0;
+	dSP;
+	int c;
+	int result = 0;
 
-    fprintf(stderr,"coro_wait_for %s\n", (func==READABLE ? "readable" : "writable"));
-    fflush(stderr);
+	fprintf(stderr,"coro_wait_for %s\n", (func==READABLE ? "readable" : "writable"));
+	fflush(stderr);
 
-    ENTER;
-    SAVETMPS;
+	ENTER;
+	SAVETMPS;
 
-    PUSHMARK(SP);
-    XPUSHs(imp_dbh->coro_handle);
-    PUTBACK;
-    c = call_pv(func, G_SCALAR|G_EVAL);
-    SPAGAIN;
+	PUSHMARK(SP);
+	XPUSHs(imp_dbh->coro_handle);
+	PUTBACK;
+	c = call_pv(func, G_SCALAR|G_EVAL);
+	SPAGAIN;
 
-    if (SvTRUE(ERRSV)) {
-        /* XXX: cop-out error handling; croak never returns */
-        /* ideally pass ERRSV up to the perl stack */
-        croak("error while waiting for handle to become %s: %s",
-              (func==READABLE)?"readable":"writable", SvPVX(ERRSV));
-    }
-    else {
-        result = POPi;
-    }
+	if (SvTRUE(ERRSV)) {
+		/* XXX: cop-out error handling; croak never returns */
+		/* ideally pass ERRSV up to the perl stack */
+		croak("error while waiting for handle to become %s: %s",
+				(func==READABLE)?"readable":"writable", SvPVX(ERRSV));
+	}
+	else {
+		result = POPi;
+	}
 
-    FREETMPS;
-    LEAVE;
+	FREETMPS;
+	LEAVE;
 
-    return result;
+	return result;
 }
 
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str) {
-    PGconn *conn;
-    PostgresPollingStatusType next_state;
-    int fd;
+	PGconn *conn;
+	PostgresPollingStatusType next_state;
+	int fd;
 
-    fprintf(stderr, "# connecting to %s\n", conn_str); fflush(stderr);
+	fprintf(stderr, "# connecting to %s\n", conn_str); fflush(stderr);
 
-    /* XXX: blocks on network lookup */
-    TRACE_PQCONNECTSTART;
-    conn = PQconnectStart(conn_str);
-    if (conn == NULL) goto bail_connect;
-    fprintf(stderr, "# started...\n"); fflush(stderr);
+	/* XXX: blocks on network lookup */
+	TRACE_PQCONNECTSTART;
+	conn = PQconnectStart(conn_str);
+	if (conn == NULL) goto bail_connect;
+	fprintf(stderr, "# started...\n"); fflush(stderr);
 
-    TRACE_PQSTATUS;
-    fprintf(stderr, "# status %d...\n", PQstatus(conn)); fflush(stderr);
-    if (PQstatus(conn) == CONNECTION_BAD) {
-        goto bail_connect;
-    }
+	TRACE_PQSTATUS;
+	fprintf(stderr, "# status %d...\n", PQstatus(conn)); fflush(stderr);
+	if (PQstatus(conn) == CONNECTION_BAD) {
+		goto bail_connect;
+	}
 
-    TRACE_PQSETNONBLOCKING;
-    PQsetnonblocking(conn,1);
+	TRACE_PQSETNONBLOCKING;
+	PQsetnonblocking(conn,1);
 
-    TRACE_PQSOCKET;
-    imp_dbh->socket_fd = PQsocket(conn);
-    if (!coro_init(aTHX_ imp_dbh)) {
-        goto bail_connect;
-    }
-    next_state = PGRES_POLLING_WRITING;
+	TRACE_PQSOCKET;
+	imp_dbh->socket_fd = PQsocket(conn);
+	if (!coro_init(aTHX_ imp_dbh)) {
+		goto bail_connect;
+	}
+	next_state = PGRES_POLLING_WRITING;
 
-    do {
-        fprintf(stderr, "# polling got state %d...\n", next_state); fflush(stderr);
-        if (next_state == PGRES_POLLING_WRITING) {
-            if (CORO_WAIT_FOR_WRITABLE != 1) {
-                //croak("error connecting while trying to write");
-                goto bail_connect;
-            }
-        }
-        else if (next_state == PGRES_POLLING_READING) {
-            if (CORO_WAIT_FOR_READABLE != 1) {
-                //croak("error connecting while trying to read");
-                goto bail_connect;
-            }
-        }
-        else {
-            goto bail_connect;
-            break;
-        }
+	do {
+		fprintf(stderr, "# polling got state %d...\n", next_state); fflush(stderr);
+		if (next_state == PGRES_POLLING_WRITING) {
+			if (CORO_WAIT_FOR_WRITABLE != 1) {
+				//croak("error connecting while trying to write");
+				goto bail_connect;
+			}
+		}
+		else if (next_state == PGRES_POLLING_READING) {
+			if (CORO_WAIT_FOR_READABLE != 1) {
+				//croak("error connecting while trying to read");
+				goto bail_connect;
+			}
+		}
+		else {
+			goto bail_connect;
+			break;
+		}
 
-        TRACE_PQCONNECTPOLL;
-    } while ((next_state = PQconnectPoll(conn)) != PGRES_POLLING_OK);
+		TRACE_PQCONNECTPOLL;
+	} while ((next_state = PQconnectPoll(conn)) != PGRES_POLLING_OK);
 
-    fprintf(stderr, "# done polling...\n"); fflush(stderr);
+	fprintf(stderr, "# done polling...\n"); fflush(stderr);
 
-    TRACE_PQSTATUS;
-    if (PQstatus(conn) != CONNECTION_OK) {
-        //croak("error connecting %d",PQstatus(conn));
-        goto bail_connect;
-    }
+	TRACE_PQSTATUS;
+	if (PQstatus(conn) != CONNECTION_OK) {
+		//croak("error connecting %d",PQstatus(conn));
+		goto bail_connect;
+	}
 
-    fprintf(stderr, "# done connecting!\n"); fflush(stderr);
+	fprintf(stderr, "# done connecting!\n"); fflush(stderr);
 
-    TRACE_PQSETNONBLOCKING;
-    PQsetnonblocking(conn,1);
+	TRACE_PQSETNONBLOCKING;
+	PQsetnonblocking(conn,1);
 
-    imp_dbh->coro_error = COERR_OK;
-    return conn;
+	imp_dbh->coro_error = COERR_OK;
+	return conn;
 
 bail_connect:
-    fprintf(stderr, "# bail connecting: %s\n",PQerrorMessage(conn)); fflush(stderr);
-    imp_dbh->coro_error = COERR_PGFATAL;
-    imp_dbh->socket_fd = -1;
-    if (conn) PQfinish(conn);
-    return NULL;
+	fprintf(stderr, "# bail connecting: %s\n",PQerrorMessage(conn)); fflush(stderr);
+	imp_dbh->coro_error = COERR_PGFATAL;
+	imp_dbh->socket_fd = -1;
+	if (conn) PQfinish(conn);
+	return NULL;
 }
 
 static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 {
-    int s = 1;
-    if (TSTART) TRC(DBILOGFP, "%sBegin coro_flush\n", THEADER);
-    while (s == 1) {
-        if (CORO_WAIT_FOR_WRITABLE != 1) {
-            imp_dbh->coro_error = COERR_INTERRUPTED;
-	    if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (INTERRUPTED)\n", THEADER);
-            return -1;
-        }
-        TRACE_PQFLUSH;
-        s = PQflush(imp_dbh->conn);
-    }
-    if (s == -1) {
-	imp_dbh->coro_error = COERR_PGFATAL;
-        TRACE_PQERRORMESSAGE;
-        _pg_warn(aTHX_ imp_dbh, "PQflush failed: %s", PQerrorMessage(imp_dbh->conn));
-    }
-    if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (%d)\n", THEADER, s);
-    return s;
+	int s = 1;
+	if (TSTART) TRC(DBILOGFP, "%sBegin coro_flush\n", THEADER);
+	while (s == 1) {
+		if (CORO_WAIT_FOR_WRITABLE != 1) {
+			imp_dbh->coro_error = COERR_INTERRUPTED;
+			if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (INTERRUPTED)\n", THEADER);
+			return -1;
+		}
+		TRACE_PQFLUSH;
+		s = PQflush(imp_dbh->conn);
+	}
+	if (s == -1) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		TRACE_PQERRORMESSAGE;
+		_pg_warn(aTHX_ imp_dbh, "PQflush failed: %s", PQerrorMessage(imp_dbh->conn));
+	}
+	if (TEND) TRC(DBILOGFP, "%sEnd coro_flush (%d)\n", THEADER, s);
+	return s;
 }
 
 static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh, bool expected)
 {
-    PGresult *result = NULL;
-    if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_result\n", THEADER);
+	PGresult *result = NULL;
+	if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_result\n", THEADER);
 
-    TRACE_PQISBUSY;
-    while (PQisBusy(imp_dbh->conn)) {
-        if (CORO_WAIT_FOR_READABLE != 1) {
-            imp_dbh->coro_error = COERR_INTERRUPTED;
-            goto finish_coro_read_result;
-        }
+	TRACE_PQISBUSY;
+	while (PQisBusy(imp_dbh->conn)) {
+		if (CORO_WAIT_FOR_READABLE != 1) {
+			imp_dbh->coro_error = COERR_INTERRUPTED;
+			goto finish_coro_read_result;
+		}
 
-        TRACE_PQCONSUMEINPUT;
-        if (!PQconsumeInput(imp_dbh->conn)) {
-	    imp_dbh->coro_error = COERR_PGFATAL;
-            TRACE_PQERRORMESSAGE;
-	    _pg_warn(aTHX_ imp_dbh, "PQconsumeInput failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
-            goto finish_coro_read_result;
-        }
+		TRACE_PQCONSUMEINPUT;
+		if (!PQconsumeInput(imp_dbh->conn)) {
+			imp_dbh->coro_error = COERR_PGFATAL;
+			TRACE_PQERRORMESSAGE;
+			_pg_warn(aTHX_ imp_dbh, "PQconsumeInput failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
+			goto finish_coro_read_result;
+		}
 
-        TRACE_PQISBUSY; // for the next iteration
-    }
+		TRACE_PQISBUSY; // for the next iteration
+	}
 
-    TRACE_PQGETRESULT;
-    result = PQgetResult(imp_dbh->conn);
-    if (expected && !result) {
-	imp_dbh->coro_error = COERR_PGFATAL;
-        TRACE_PQERRORMESSAGE;
-	_pg_warn(aTHX_ imp_dbh, "PQgetResult failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
-    }
+	TRACE_PQGETRESULT;
+	result = PQgetResult(imp_dbh->conn);
+	if (expected && !result) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		TRACE_PQERRORMESSAGE;
+		_pg_warn(aTHX_ imp_dbh, "PQgetResult failed during coro_read_result: %s", PQerrorMessage(imp_dbh->conn));
+	}
 
 finish_coro_read_result:
-    if (TEND) TRC(DBILOGFP, "%sEnd coro_read_result\n", THEADER);
-    return result;
+	if (TEND) TRC(DBILOGFP, "%sEnd coro_read_result\n", THEADER);
+	return result;
 }
 
 static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
 {
-    int s;
-    PGresult *result = NULL;
-    PGresult *next_result = NULL;
+	int s;
+	PGresult *result = NULL;
+	PGresult *next_result = NULL;
 
-    if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexec\n", THEADER);
+	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexec\n", THEADER);
 
-    if (imp_dbh->coro_error != COERR_OK) {
-        goto finish_coro_PQexec;
-    }
+	if (imp_dbh->coro_error != COERR_OK) {
+		goto finish_coro_PQexec;
+	}
 
-    TRACE_PQSENDQUERY;
-    if (!PQsendQuery(imp_dbh->conn, sql)) {
-        imp_dbh->coro_error = COERR_PGFATAL;
-        TRACE_PQERRORMESSAGE;
-        _pg_warn(aTHX_ imp_dbh, "PQsendQuery failed during coro_PQexec: %s", PQerrorMessage(imp_dbh->conn));
-        goto finish_coro_PQexec;
-    }
+	TRACE_PQSENDQUERY;
+	if (!PQsendQuery(imp_dbh->conn, sql)) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		TRACE_PQERRORMESSAGE;
+		_pg_warn(aTHX_ imp_dbh, "PQsendQuery failed during coro_PQexec: %s", PQerrorMessage(imp_dbh->conn));
+		goto finish_coro_PQexec;
+	}
 
-    if (coro_flush(aTHX_ imp_dbh) != 0)
-        goto finish_coro_PQexec;
+	if (coro_flush(aTHX_ imp_dbh) != 0)
+		goto finish_coro_PQexec;
 
-    result = coro_read_result(aTHX_ imp_dbh, true);
-    if (!result)
-        goto finish_coro_PQexec;
+	result = coro_read_result(aTHX_ imp_dbh, true);
+	if (!result)
+		goto finish_coro_PQexec;
 
-    // libpq goes into an error state if we don't check for additional
-    // results.
-    next_result = coro_read_result(aTHX_ imp_dbh, false);
+	// libpq goes into an error state if we don't check for additional
+	// results.
+	next_result = coro_read_result(aTHX_ imp_dbh, false);
 
-    if (next_result) {
-        imp_dbh->coro_next_result = next_result;
-        imp_dbh->coro_error = COERR_EXTRA_RESULT;
-    }
-    else {
-        imp_dbh->coro_next_result = NULL;
-        imp_dbh->coro_error = COERR_OK;
-    }
+	if (next_result) {
+		imp_dbh->coro_next_result = next_result;
+		imp_dbh->coro_error = COERR_EXTRA_RESULT;
+	}
+	else {
+		imp_dbh->coro_next_result = NULL;
+		imp_dbh->coro_error = COERR_OK;
+	}
 
 finish_coro_PQexec:
-    if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexec (%s)\n", THEADER, _error_message(imp_dbh));
-    return result;
+	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexec (%s)\n", THEADER, _error_message(imp_dbh));
+	return result;
 }
 
 static const char const *_error_message(const imp_dbh_t *imp_dbh)
@@ -5158,16 +5153,16 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh)
 	// disabled: only needed for TRACE_PQERRORMESSAGE
 	// dTHX;
 	switch (imp_dbh->coro_error) {
-	case COERR_OK:
-	case COERR_PGFATAL:
-		// TRACE_PQERRORMESSAGE; 
-		return PQerrorMessage(imp_dbh->conn);
-	case COERR_EXTRA_RESULT:
-		return "Got an unexpected extra result!";
-	case COERR_INTERRUPTED:
-		return "Fatal interrupt during non-blocking wait.";
-	case COERR_FATAL:
-		return "Fatal error during non-blocking wait.";
+		case COERR_OK:
+		case COERR_PGFATAL:
+			// TRACE_PQERRORMESSAGE; 
+			return PQerrorMessage(imp_dbh->conn);
+		case COERR_EXTRA_RESULT:
+			return "Got an unexpected extra result!";
+		case COERR_INTERRUPTED:
+			return "Fatal interrupt during non-blocking wait.";
+		case COERR_FATAL:
+			return "Fatal error during non-blocking wait.";
 	}
 	return NULL;
 }

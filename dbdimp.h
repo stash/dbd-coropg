@@ -51,7 +51,6 @@ struct imp_dbh_st {
         int     socket_fd;
         SV      *coro_handle;
         coro_error_t coro_error;
-        PGresult *coro_next_result;
 };
 
 

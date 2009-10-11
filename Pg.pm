@@ -249,7 +249,6 @@ use 5.006001;
                 open my $fh, "+>&".$fd
                     or die "Coro::DBD::Pg unable to clone postgres fd";
 		my $cfh = Coro::Handle->new_from_fh($fh);
-                warn "got $cfh\n";
                 return $cfh;
 	}
 	sub _coro_readable { 

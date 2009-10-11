@@ -100,6 +100,8 @@ static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
 static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh);
 static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
 static PGresult *coro_PQexecParams (pTHX_ imp_sth_t *imp_sth, const char *statement);
+static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement, int params);
+static PGresult *coro_PQexecPrepared (pTHX_ imp_sth_t *imp_sth);
 
 /* ================================================================== */
 void dbd_init (dbistate_t *dbistate)
@@ -190,7 +192,6 @@ int dbd_db_login (SV * dbh, imp_dbh_t * imp_dbh, char * dbname, char * uid, char
 	
 	/* Attempt the connection to the database */
 	if (TLOGIN) TRC(DBILOGFP, "%sLogin connection string: (%s)\n", THEADER, conn_str);
-	TRACE_PQCONNECTDB;
 	imp_dbh->conn = coro_PQconnectdb(aTHX_ imp_dbh, conn_str);
 	if (TLOGIN) TRC(DBILOGFP, "%sConnection complete\n", THEADER);
 	Safefree(conn_str);
@@ -1176,7 +1177,6 @@ SV * dbd_st_FETCH_attrib (SV * sth, imp_sth_t * imp_sth, SV * keysv)
 					char statement[128];
 					snprintf(statement, sizeof(statement),
 							"SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid=%d AND attnum=%d", x, y);
-					TRACE_PQEXEC;
 					result = coro_PQexec(aTHX_ imp_dbh, statement);
 					status = _sqlstate(aTHX_ imp_dbh, result);
 					if (PGRES_TUPLES_OK == status) {
@@ -2064,39 +2064,29 @@ static int pg_st_prepare_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 	STRLEN       execsize;
 	PGresult *   result;
 	int          status = -1;
+	int	     params = 0;
 	seg_t *      currseg;
-	bool         oldprepare = DBDPG_TRUE;
 	ph_t *       currph;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_st_prepare_statement\n", THEADER);
 
-#if PGLIBVERSION >= 80000
-	oldprepare = DBDPG_FALSE;
-#endif
+	Renew(imp_sth->prepare_name, 256, char); /* freed in dbd_st_destroy */
 
-	Renew(imp_sth->prepare_name, 25, char); /* freed in dbd_st_destroy */
-
-	/* Name is "dbdpg_xPID_#", where x is 'p'ositive or 'n'egative */
-	sprintf(imp_sth->prepare_name,"dbdpg_%c%d_%d",
+	/* Name is "dbdpg_xPID_#_xFD", where x is 'p'ositive or 'n'egative */
+	snprintf(imp_sth->prepare_name, 256, "dbdpg_%c%d_%d_%c%d",
 			(imp_dbh->pid_number < 0 ? 'n' : 'p'),
 			abs(imp_dbh->pid_number),
-			imp_dbh->prepare_number);
+			imp_dbh->prepare_number,
+			(imp_dbh->socket_fd < 0 ? 'n' : 'p'),
+			abs(imp_dbh->socket_fd));
+	imp_sth->prepare_name[255] = 0; // unnecessary paranoia?
 
 	if (TRACE5)
-		TRC(DBILOGFP, "%sNew statement name (%s), oldprepare is %d\n",
-			THEADER, imp_sth->prepare_name, oldprepare);
-
-	/* PQprepare was not added until 8.0 */
+		TRC(DBILOGFP, "%sNew statement name (%s)\n", THEADER, imp_sth->prepare_name);
 
 	execsize = imp_sth->totalsize;
-	if (oldprepare)
-		execsize += strlen("PREPARE  AS ") + strlen(imp_sth->prepare_name); /* Two spaces! */
 
 	if (imp_sth->numphs!=0) {
-		if (oldprepare) {
-			execsize += strlen("()");
-			execsize += imp_sth->numphs-1; /* for the commas */
-		}
 		for (currseg=imp_sth->seg; NULL != currseg; currseg=currseg->nextseg) {
 			if (0==currseg->placeholder)
 				continue;
@@ -2108,37 +2098,12 @@ static int pg_st_prepare_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 			if (x>=7)
 				croak("Too many placeholders!");
 			execsize += x+1;
-			if (oldprepare) {
-				/* The parameter type, only once per number please */
-				if (!currseg->ph->referenced)
-					execsize += strlen(currseg->ph->bind_type->type_name);
-				currseg->ph->referenced = DBDPG_TRUE;
-			}
 		}
 	}
 
 	New(0, statement, execsize+1, char); /* freed below */
+	statement[0] = '\0';
 
-	if (oldprepare) {
-		sprintf(statement, "PREPARE %s", imp_sth->prepare_name);
-		if (imp_sth->numphs!=0) {
-			strcat(statement, "(");
-			for (x=0, currseg=imp_sth->seg; NULL != currseg; currseg=currseg->nextseg) {
-				if (currseg->placeholder && currseg->ph->referenced) {
-					if (x!=0)
-						strcat(statement, ",");
-					strcat(statement, currseg->ph->bind_type->type_name);
-					x=1;
-					currseg->ph->referenced = DBDPG_FALSE;
-				}
-			}
-			strcat(statement, ")");
-		}
-		strcat(statement, " AS ");
-	}
-	else {
-		statement[0] = '\0';
-	}
 	/* Construct the statement, with proper placeholders */
 	for (currseg=imp_sth->seg; NULL != currseg; currseg=currseg->nextseg) {
 		if (currseg->segment != NULL)
@@ -2153,33 +2118,27 @@ static int pg_st_prepare_statement (pTHX_ SV * sth, imp_sth_t * imp_sth)
 	if (TRACE6)
 		TRC(DBILOGFP, "%sPrepared statement (%s)\n", THEADER, statement);
 
-	if (oldprepare) {
-		status = _result(aTHX_ imp_dbh, statement);
-	}
-	else {
-		int params = 0;
-		if (imp_sth->numbound!=0) {
-			params = imp_sth->numphs;
-			if (NULL == imp_sth->PQoids) {
-				Newz(0, imp_sth->PQoids, (unsigned int)imp_sth->numphs, Oid);
-			}
-			for (x=0,currph=imp_sth->ph; NULL != currph; currph=currph->nextph) {
-				imp_sth->PQoids[x++] = (currph->defaultval) ? 0 : (Oid)currph->bind_type->type_id;
-			}
+	if (imp_sth->numbound!=0) {
+		params = imp_sth->numphs;
+		if (NULL == imp_sth->PQoids) {
+			Newz(0, imp_sth->PQoids, (unsigned int)imp_sth->numphs, Oid);
 		}
-		if (TSQL)
-			TRC(DBILOGFP, "PREPARE %s AS %s;\n\n", imp_sth->prepare_name, statement);
+		for (x=0,currph=imp_sth->ph; NULL != currph; currph=currph->nextph) {
+			imp_sth->PQoids[x++] = (currph->defaultval) ? 0 : (Oid)currph->bind_type->type_id;
+		}
+	}
+	if (TSQL)
+		TRC(DBILOGFP, "PREPARE %s AS %s;\n\n", imp_sth->prepare_name, statement);
 
-		TRACE_PQPREPARE;
-		result = PQprepare(imp_dbh->conn, imp_sth->prepare_name, statement, params, imp_sth->PQoids);
-		status = _sqlstate(aTHX_ imp_dbh, result);
-		if (result) {
-			TRACE_PQCLEAR;
-			PQclear(result);
-		}
-		if (TRACE6)
-			TRC(DBILOGFP, "%sUsing PQprepare: %s\n", THEADER, statement);
+	result = coro_PQprepare(aTHX_ imp_sth, statement, params);
+	status = _sqlstate(aTHX_ imp_dbh, result);
+	if (result) {
+		TRACE_PQCLEAR;
+		PQclear(result);
 	}
+	if (TRACE6)
+		TRC(DBILOGFP, "%sUsing PQprepare: %s\n", THEADER, statement);
+
 	Safefree(statement);
 	if (PGRES_COMMAND_OK != status) {
 		Safefree(imp_sth->prepare_name);
@@ -3088,9 +3047,7 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 				(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
 		}
 		else {
-			TRACE_PQEXECPREPARED;
-			imp_sth->result = PQexecPrepared
-				(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
+			imp_sth->result = coro_PQexecPrepared(aTHX_ imp_sth);
 		}
 	} /* end new-style prepare */
 	else {
@@ -3167,7 +3124,6 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 					(imp_dbh->conn, statement, imp_sth->numphs, imp_sth->PQoids, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
 			}
 			else {
-				TRACE_PQEXECPARAMS;
 				imp_sth->result = coro_PQexecParams(aTHX_ imp_sth, statement);
 			}
 		}
@@ -3205,7 +3161,6 @@ int dbd_st_execute (SV * sth, imp_sth_t * imp_sth)
 				ret = PQsendQuery(imp_dbh->conn, statement);
 			}
 			else {
-				TRACE_PQEXEC;
 				imp_sth->result = coro_PQexec(aTHX_ imp_dbh, statement);
 			}
 
@@ -5144,6 +5099,25 @@ finish_coro_read_result:
 	return result;
 }
 
+static const char const *_error_message(const imp_dbh_t *imp_dbh)
+{
+	// disabled: only needed for TRACE_PQERRORMESSAGE
+	// dTHX;
+	switch (imp_dbh->coro_error) {
+		case COERR_OK:
+		case COERR_PGFATAL:
+			// TRACE_PQERRORMESSAGE; 
+			return PQerrorMessage(imp_dbh->conn);
+		case COERR_EXTRA_RESULT:
+			return "Got an unexpected extra result!";
+		case COERR_INTERRUPTED:
+			return "Fatal interrupt during non-blocking wait.";
+		case COERR_FATAL:
+			return "Fatal error during non-blocking wait.";
+	}
+	return NULL;
+}
+
 /* From the Pg docs for PQexec:
  *  [the sql param] is allowed to include multiple SQL commands (separated by
  *  semicolons) in the command string. Multiple queries sent in a single
@@ -5184,25 +5158,6 @@ finish_coro_PQexec:
 	return result;
 }
 
-static const char const *_error_message(const imp_dbh_t *imp_dbh)
-{
-	// disabled: only needed for TRACE_PQERRORMESSAGE
-	// dTHX;
-	switch (imp_dbh->coro_error) {
-		case COERR_OK:
-		case COERR_PGFATAL:
-			// TRACE_PQERRORMESSAGE; 
-			return PQerrorMessage(imp_dbh->conn);
-		case COERR_EXTRA_RESULT:
-			return "Got an unexpected extra result!";
-		case COERR_INTERRUPTED:
-			return "Fatal interrupt during non-blocking wait.";
-		case COERR_FATAL:
-			return "Fatal error during non-blocking wait.";
-	}
-	return NULL;
-}
-
 static PGresult *coro_PQexecParams(pTHX_ imp_sth_t *imp_sth, const char *statement)
 {
 	D_imp_dbh_from_sth;
@@ -5226,6 +5181,57 @@ static PGresult *coro_PQexecParams(pTHX_ imp_sth_t *imp_sth, const char *stateme
 
 finish_coro_PQexecParams:
 	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexecParams %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	return result;
+}
+
+static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement, int params)
+{
+	D_imp_dbh_from_sth;
+	int ret;
+	PGresult *result = NULL;
+
+	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQprepare %d\n", THEADER, imp_dbh->socket_fd);
+
+	TRACE_PQSENDPREPARE;
+	ret = PQsendPrepare(imp_dbh->conn, imp_sth->prepare_name, statement, params, imp_sth->PQoids);
+	if (!ret) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		goto finish_coro_PQsendPrepare;
+	}
+
+	if (coro_flush(aTHX_ imp_dbh) != 0)
+		goto finish_coro_PQsendPrepare;
+
+	result = coro_read_result(aTHX_ imp_dbh);
+
+finish_coro_PQsendPrepare:
+	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQprepare %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	return result;
+}
+
+static PGresult *coro_PQexecPrepared(pTHX_ imp_sth_t *imp_sth)
+{
+	D_imp_dbh_from_sth;
+	int ret;
+	PGresult *result = NULL;
+
+	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexecPrepared %d\n", THEADER, imp_dbh->socket_fd);
+
+	TRACE_PQSENDQUERYPREPARED;
+	ret = PQsendQueryPrepared(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
+
+	if (!ret) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		goto finish_coro_PQexecPrepared;
+	}
+
+	if (coro_flush(aTHX_ imp_dbh) != 0)
+		goto finish_coro_PQexecPrepared;
+
+	result = coro_read_result(aTHX_ imp_dbh);
+
+finish_coro_PQexecPrepared:
+	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexecPrepared %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 

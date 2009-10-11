@@ -1,5 +1,5 @@
 #!perl
-BEGIN { $ENV{DBI_TRACE} = 5; }
+#BEGIN { $ENV{DBI_TRACE} = 5; }
 use strict;
 use warnings;
 use DBI;
@@ -8,7 +8,7 @@ use DBD::Pg;
 use AnyEvent;
 use Coro;
 use Coro::AnyEvent;
-use Test::More tests => 41;
+use Test::More tests => 49;
 use Test::Exception;
 use lib 't','.';
 require 'dbdpg_test_setup.pl';
@@ -26,6 +26,9 @@ $dbh->{AutoCommit} = 1;
 $dbh2->{AutoCommit} = 1;
 
 END { local $?; $dbh->disconnect; $dbh2->disconnect }
+
+my $ping = $dbh->pg_ping();
+ok $ping > 0, 'pinged';
 
 my $table = "test_$^T";
 $dbh->begin_work;
@@ -45,7 +48,7 @@ prepare_and_nullable: {
     is $nullable->[1], 0;
 }
 
-just_one_statement: {
+multi_statement_in_do: {
     lives_ok {
         my $rv = $dbh->do(qq{
             INSERT INTO $table (foo,bar) VALUES (-1,'neg one');
@@ -57,10 +60,21 @@ just_one_statement: {
     my $sth = $dbh->prepare("SELECT * FROM test_$^T");
     $sth->execute();
     is $sth->rows, 2, "two rows inserted";
+    $sth->finish;
 }
 
-my $ping = $dbh->pg_ping();
-ok $ping > 0, 'pinged';
+prepared_query: {
+    my $sth = $dbh->prepare("SELECT * FROM test_$^T WHERE foo = ?");
+    for (1..2) {
+        $sth->execute(-1);
+        is $sth->rows, 1;
+        is_deeply $sth->fetchall_arrayref, [[-1,'neg one']];
+
+        $sth->execute(-2);
+        is $sth->rows, 1;
+        is_deeply $sth->fetchall_arrayref, [[-2,'neg two']];
+    }
+}
 
 ok $dbh->do("TRUNCATE $table"), 'truncated';
 

@@ -153,6 +153,7 @@ DBISTATE_DECLARE;
 #define TRACE_PQPUTCOPYEND         TRACE_XX "%sPQputCopyEnd\n",          THEADER)
 #define TRACE_PQRESULTERRORFIELD   TRACE_XX "%sPQresultErrorField\n",    THEADER)
 #define TRACE_PQRESULTSTATUS       TRACE_XX "%sPQresultStatus\n",        THEADER)
+#define TRACE_PQSENDPREPARE        TRACE_XX "%sPQsendPrepare\n",         THEADER)
 #define TRACE_PQSENDQUERY          TRACE_XX "%sPQsendQuery\n",           THEADER)
 #define TRACE_PQSENDQUERYPARAMS    TRACE_XX "%sPQsendQueryParams\n",     THEADER)
 #define TRACE_PQSENDQUERYPREPARED  TRACE_XX "%sPQsendQueryPrepared\n",   THEADER)

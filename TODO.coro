@@ -1,0 +1,28 @@
+TODO
+
+* unblock COPY IN & COPY OUT
+* get rid of pg_async ?
+* special NOTIFY processing?
+** wait for readable(), call PQconsumeInput, then call PQnotifies (never blocks)
+
+DONE
+
+* replace blocking functions with PQsendXxx equivalents
+* ensure proper usage of PQflush for nonblocking 
+
+WON'T DO
+
+* unblock func()
+** PQfn() is synchronous.
+* unlock lo_* methods
+** first call to any lo_ method will run a PQexec :(
+** all of the rest call PQfn(), which synchronously waits for input
+
+CRAZYNESS
+
+Patch libpq so that *all* IO waits (pqSocketPoll) can go through a C callback.
+
+FURTHER CRAZYNESS
+
+Make that C callback use the Coro API directly.
+Possibly even use the libev API from there.

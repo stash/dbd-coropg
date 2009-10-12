@@ -1,5 +1,5 @@
 #!perl
-#BEGIN { $ENV{DBI_TRACE} = 5; }
+#BEGIN { $ENV{DBI_TRACE} = 7; }
 use strict;
 use warnings;
 use DBI;
@@ -8,7 +8,7 @@ use DBD::Pg;
 use AnyEvent;
 use Coro;
 use Coro::AnyEvent;
-use Test::More tests => 49;
+use Test::More tests => 54;
 use Test::Exception;
 use lib 't','.';
 require 'dbdpg_test_setup.pl';
@@ -115,3 +115,26 @@ for (1..5) {
 }
 $cv->recv;
 cmp_ok $swaps, '>', 5*3, "did $swaps 'on_enter's";
+
+rollback: {
+    local $dbh->{AutoCommit} = 0;
+    dies_ok {
+        my $sth = $dbh->prepare(q{SELECT "Oops, double quotes" WHERE q = ?});
+        $sth->execute(12346);
+    } "invalid statement prepare dies";
+
+    lives_ok {
+        $dbh->commit;
+    } "nothing to commit; should work without error";
+
+    lives_ok {
+        my $sth = $dbh->prepare(qq{SELECT 'foo' FROM $table WHERE foo = ?});
+        $sth->execute(12346);
+        $sth->finish;
+    } "valid statement lives";
+
+    lives_ok {
+        $dbh->disconnect;
+    };
+}
+

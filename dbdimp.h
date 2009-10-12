@@ -15,6 +15,7 @@ typedef enum {
 	COERR_PGFATAL,      /* postgres failed for some reason; connection now busted */
 	COERR_INTERRUPTED,  /* failed while waiting for read/writability */
 	COERR_EXTRA_RESULT, /* got a second PGresult */
+        COERR_PGRESULT,     /* failed, but got a PGresult; read the error off of that */
 } coro_error_t;
 
 /* Define drh implementor data structure */
@@ -51,6 +52,8 @@ struct imp_dbh_st {
         int     socket_fd;
         SV      *coro_handle;
         coro_error_t coro_error;
+        const char *last_result_err;
+        ExecStatusType last_result_status;
 };
 
 

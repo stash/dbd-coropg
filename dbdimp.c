@@ -97,7 +97,7 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh);
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str);
 static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh);
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
-static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh);
+static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh, PGconn *conn);
 static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
 static PGresult *coro_PQexecParams (pTHX_ imp_sth_t *imp_sth, const char *statement);
 static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement, int params);
@@ -372,11 +372,15 @@ static ExecStatusType _sqlstate(pTHX_ imp_dbh_t * imp_dbh, PGresult * result)
 {
 	ExecStatusType status   = PGRES_FATAL_ERROR; /* until proven otherwise */
 	bool           stateset = DBDPG_FALSE;
+        const char *diag_sqlstate;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin _sqlstate\n", THEADER);
 
 	switch (imp_dbh->coro_error) {
 	case COERR_OK:
+                break;
+        case COERR_PGRESULT:
+                imp_dbh->coro_error = COERR_OK; /* clear once read */
 		break;
 	case COERR_INTERRUPTED:
 		strncpy(imp_dbh->sqlstate, "58030", 6); /* IO ERROR */
@@ -388,21 +392,17 @@ static ExecStatusType _sqlstate(pTHX_ imp_dbh_t * imp_dbh, PGresult * result)
 		goto finish_sqlstate;
 	}
 
-	if (result) {
-		TRACE_PQRESULTSTATUS;
-		status = PQresultStatus(result);
-	}
-
 	/*
 	  Because PQresultErrorField may not work completely when an error occurs, and 
 	  we are connecting over TCP/IP, only set it here if non-null, and fall through 
 	  to a better default value below.
 	*/
 	if (result) {
+                status = imp_dbh->last_result_status;
 		TRACE_PQRESULTERRORFIELD;
-		if (NULL != PQresultErrorField(result,PG_DIAG_SQLSTATE)) {
-			TRACE_PQRESULTERRORFIELD;
-			strncpy(imp_dbh->sqlstate, PQresultErrorField(result,PG_DIAG_SQLSTATE), 5);
+                diag_sqlstate = PQresultErrorField(result,PG_DIAG_SQLSTATE);
+		if (diag_sqlstate) {
+			strncpy(imp_dbh->sqlstate, diag_sqlstate, 5);
 			imp_dbh->sqlstate[5] = '\0';
 			stateset = DBDPG_TRUE;
 		}
@@ -440,6 +440,8 @@ finish_sqlstate:
 	if (TRACE7) TRC(DBILOGFP, "%s_sqlstate txn_status is %d\n",
 					THEADER, pg_db_txn_status(aTHX_ imp_dbh));
 
+        imp_dbh->last_result_err = NULL;
+        imp_dbh->last_result_status = 0;
 
 	if (TEND) TRC(DBILOGFP, "%sEnd _sqlstate (status: %d)\n", THEADER, status);
 	return status;
@@ -4846,11 +4848,20 @@ typedef enum
 
 */
 
-static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh)
+static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh, PGconn *conn)
 {
 	dSP;
 
 	if (TCORO) TRC(DBILOGFP, "%scoro_init\n", THEADER);
+
+	TRACE_PQSETNONBLOCKING;
+	PQsetnonblocking(conn,1);
+
+	TRACE_PQSOCKET;
+        imp_dbh->socket_fd = PQsocket(conn);
+        imp_dbh->last_result_err = NULL;
+        imp_dbh->coro_handle = NULL;
+        imp_dbh->coro_error = COERR_OK;
 
 	ENTER;
 	SAVETMPS;
@@ -4863,7 +4874,7 @@ static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh)
 
 	if (SvTRUE(ERRSV)) {
 		/* XXX: cop-out error handling; croak never returns */
-		/* ideally pass ERRSV up to the perl stack */
+		/* ideally pass ERRSV up to the perl stack? */
 		croak("error in coro init: %s", SvPVX(ERRSV));
 	}
 	else {
@@ -4944,12 +4955,7 @@ static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str)
 		goto finish_coro_PQconnectStart;
 	}
 
-	TRACE_PQSETNONBLOCKING;
-	PQsetnonblocking(conn,1);
-
-	TRACE_PQSOCKET;
-	imp_dbh->socket_fd = PQsocket(conn);
-	if (!coro_init(aTHX_ imp_dbh)) {
+	if (!coro_init(aTHX_ imp_dbh, conn)) {
 		imp_dbh->coro_error = COERR_FATAL;
 		goto finish_coro_PQconnectStart;
 	}
@@ -5063,14 +5069,19 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 	bool has_error = false;
 
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_read_result %d\n", THEADER, imp_dbh->socket_fd);
+        imp_dbh->last_result_err = NULL;
+        imp_dbh->last_result_status = 0;
 
 	result = coro_read_one_result(aTHX_ imp_dbh, true);
 	if (!result) goto finish_coro_read_result;
 
 	TRACE_PQRESULTSTATUS;
 	status = PQresultStatus(result);
+        imp_dbh->last_result_status = status;
 	if (!IS_PG_OK_STATUS(status)) {
-		imp_dbh->coro_error = COERR_PGFATAL;
+		imp_dbh->coro_error = COERR_PGRESULT;
+                TRACE_PQRESULTERRORFIELD;
+                imp_dbh->last_result_err = PQresultErrorField(result,PG_DIAG_MESSAGE_PRIMARY);
 		has_error = true;
 	}
 
@@ -5092,8 +5103,11 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 
 		TRACE_PQRESULTSTATUS;
 		status = PQresultStatus(result);
+                imp_dbh->last_result_status = status;
 		if (!IS_PG_OK_STATUS(status)) {
-			imp_dbh->coro_error = COERR_PGFATAL;
+			imp_dbh->coro_error = COERR_PGRESULT;
+                        TRACE_PQRESULTERRORFIELD;
+                        imp_dbh->last_result_err = PQresultErrorField(result,PG_DIAG_MESSAGE_PRIMARY);
 			has_error = true;
 		}
 	}
@@ -5118,6 +5132,8 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh)
 			return "Fatal interrupt during non-blocking wait.";
 		case COERR_FATAL:
 			return "Fatal error during non-blocking wait.";
+                case COERR_PGRESULT:
+                        return (imp_dbh->last_result_err) ? imp_dbh->last_result_err : "Unknown statement error";
 	}
 	return NULL;
 }

@@ -4125,6 +4125,9 @@ static int pg_db_start_txn (pTHX_ SV * dbh, imp_dbh_t * imp_dbh)
 			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_start_txn (error: status not OK for begin)\n", THEADER);
 			return 0;
 		}
+		/* disable non-blocking mode while in lo_ mode */
+		TRACE_PQSETNONBLOCKING;
+		PQsetnonblocking(imp_dbh->conn,0);
 		imp_dbh->done_begin = DBDPG_TRUE;
 	}
 	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_start_txn\n", THEADER);
@@ -4146,6 +4149,8 @@ static int pg_db_end_txn (pTHX_ SV * dbh, imp_dbh_t * imp_dbh, int commit)
 
 	status = _result(aTHX_ imp_dbh, commit ? "commit" : "rollback");
 	imp_dbh->done_begin = DBDPG_FALSE;
+	TRACE_PQSETNONBLOCKING;
+	PQsetnonblocking(imp_dbh->conn,1);
 	if (PGRES_COMMAND_OK != status) {
 		pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
 		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_end_txn (error: status not OK for %s)\n",

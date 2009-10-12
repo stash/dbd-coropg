@@ -18,7 +18,7 @@ my $dbh = connect_database();
 if (! defined $dbh) {
 	plan skip_all => 'Connection to database failed, cannot continue testing';
 }
-plan tests => 54;
+plan tests => 58;
 
 isnt ($dbh, undef, 'Connect to database for miscellaneous tests');
 
@@ -87,6 +87,7 @@ SKIP: {
 
 	my ($fh,$filename) = File::Temp::tempfile('dbdpg_test_XXXXXX', SUFFIX => 'tst', UNLINK => 1);
 	my ($flag, $info, $expected, $SQL);
+        my (@split_info);
 
 	$t=q{Trace flag 'SQL' works as expected};
 	$flag = $dbh->parse_trace_flags('SQL');
@@ -109,23 +110,8 @@ SKIP: {
 	$dbh->trace(0);
 	seek $fh,0,0;
 	{ local $/; ($info = <$fh>) =~ s/\r//go; }
-	$expected = q{PQexec
-PQresultStatus
-PQresultErrorField
-PQclear
-PQexec
-PQresultStatus
-PQresultErrorField
-PQntuples
-PQclear
-PQtransactionStatus
-PQtransactionStatus
-PQexec
-PQresultStatus
-PQresultErrorField
-PQclear
-};
-	is ($info, $expected, $t);
+        is (scalar(grep { $_ !~ /^PQ/ } split("\n",$info)), 0, $t);
+
 
 	$t=q{Trace flag 'pgstart' works as expected};
 	seek $fh, 0, 0;
@@ -136,17 +122,7 @@ PQclear
 	$dbh->trace(0);
 	seek $fh,0,0;
 	{ local $/; ($info = <$fh>) =~ s/\r//go; }
-	$expected = q{Begin pg_quickexec (query: SELECT 'dbdpg_flag_testing' async: 0 async_status: 0)
-Begin _result (sql: begin)
-Begin _sqlstate
-Begin _sqlstate
-Begin dbd_db_commit
-Begin pg_db_rollback_commit (action: commit AutoCommit: 0 BegunWork: 0)
-Begin PGTransactionStatusType
-Begin _result (sql: commit)
-Begin _sqlstate
-};
-	is ($info, $expected, $t);
+        is (scalar(grep { $_ !~ /^Begin / } split("\n",$info)), 0, $t);
 
 	$t=q{Trace flag 'pgprefix' works as expected};
 	seek $fh, 0, 0;
@@ -157,17 +133,7 @@ Begin _sqlstate
 	$dbh->trace(0);
 	seek $fh,0,0;
 	{ local $/; ($info = <$fh>) =~ s/\r//go; }
-	$expected = q{dbdpg: Begin pg_quickexec (query: SELECT 'dbdpg_flag_testing' async: 0 async_status: 0)
-dbdpg: Begin _result (sql: begin)
-dbdpg: Begin _sqlstate
-dbdpg: Begin _sqlstate
-dbdpg: Begin dbd_db_commit
-dbdpg: Begin pg_db_rollback_commit (action: commit AutoCommit: 0 BegunWork: 0)
-dbdpg: Begin PGTransactionStatusType
-dbdpg: Begin _result (sql: commit)
-dbdpg: Begin _sqlstate
-};
-	is ($info, $expected, $t);
+        is (scalar(grep { $_ !~ /^dbdpg: Begin / } split("\n",$info)), 0, $t);
 
 	$t=q{Trace flag 'pgend' works as expected};
 	seek $fh, 0, 0;
@@ -178,18 +144,20 @@ dbdpg: Begin _sqlstate
 	$dbh->trace(0);
 	seek $fh,0,0;
 	{ local $/; ($info = <$fh>) =~ s/\r//go; }
-	$expected = q{End _sqlstate (imp_dbh->sqlstate: 00000)
-End _sqlstate (status: 1)
-End _result
-End _sqlstate (imp_dbh->sqlstate: 00000)
-End _sqlstate (status: 2)
-End pg_quickexec (rows: 1, txn_status: 2)
-End _sqlstate (imp_dbh->sqlstate: 00000)
-End _sqlstate (status: 1)
-End _result
-End pg_db_rollback_commit (result: 1)
-};
-	is ($info, $expected, $t);
+        is (scalar(grep { $_ !~ /^End / } split("\n",$info)), 0, $t);
+
+	$t=q{Trace flag 'pgcoro' works as expected};
+	seek $fh, 0, 0;
+	truncate $fh, tell($fh);
+	$dbh->trace($dbh->parse_trace_flags('pgcoro'), $filename);
+	$dbh->do($SQL);
+	$dbh->commit();
+	$dbh->trace(0);
+	seek $fh,0,0;
+	{ local $/; ($info = <$fh>) =~ s/\r//go; }
+        @split_info = split("\n",$info);
+        ok scalar(@split_info)>0,$t;
+        is (scalar(grep { $_ !~ /coro/ } split("\n",$info)), 0, $t);
 
 	$t=q{Trace flag 'pglogin' returns undef if no activity};
 	seek $fh, 0, 0;
@@ -253,13 +221,11 @@ Disconnection complete
 	$dbh->rollback();
 	seek $fh,0,0;
 	{ local $/; ($info = <$fh>) =~ s/\r//go; }
-	$expected = q{Login connection string: 
-Connection complete
-dbdpg: Begin pg_quickexec (query: SELECT 'dbdpg_flag_testing' async: 0 async_status: 0)
-dbdpg: Begin _sqlstate
-};
 	$info =~ s/(Login connection string: ).+/$1/g;
-	is ($info, "$expected", $t);
+        @split_info = split("\n",$info);
+        is ($split_info[0], q{Login connection string: }, $t);
+        is ($split_info[1], q{Connection complete}, $t);
+        is (scalar(grep { $_ !~ /^dbdpg: Begin / } @split_info[2..$#split_info]), 0, $t);
 
 } ## end trace flag testing using File::Temp
 

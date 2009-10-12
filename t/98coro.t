@@ -36,6 +36,9 @@ my $rv = $dbh->do("CREATE TABLE $table(foo int, bar text not null)");
 ok $rv, "got rv";
 $dbh->commit;
 
+my $trace_coro = DBD::Pg->parse_trace_flag("pgcoro");
+is $trace_coro, 0x20000000;
+
 prepare_and_nullable: {
     my $sth = $dbh->prepare("SELECT * FROM test_$^T");
     ok $sth;
@@ -95,6 +98,7 @@ for (1..5) {
         $this_dbh->{AutoCommit} = 1;
         ok $this_dbh->do("INSERT INTO $table (foo,bar) VALUES (?,?)", {}, $n,"baz"), "$n inserted";
 #         diag "$n do";
+        cede;
 
         my $sth = $this_dbh->prepare("SELECT * FROM $table WHERE foo = ?");
         ok $sth, "$n prepared a placeholder'd query";
@@ -110,4 +114,4 @@ for (1..5) {
     } $_;
 }
 $cv->recv;
-cmp_ok $swaps, '>', 5, "did $swaps 'on_enter's";
+cmp_ok $swaps, '>', 5*3, "did $swaps 'on_enter's";

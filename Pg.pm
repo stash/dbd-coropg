@@ -87,6 +87,7 @@ use 5.006001;
 		return 0x08000000 if $flag eq 'pgprefix';
 		return 0x10000000 if $flag eq 'pglogin';
 		return 0x20000000 if $flag eq 'pgquote';
+		return 0x20000000 if $flag eq 'pgcoro'; # XXX: pgquote seems to be unused
 		return DBI::parse_trace_flag($class, $flag);
 	}
 	sub parse_trace_flags {
@@ -250,14 +251,6 @@ use 5.006001;
                     or die "Coro::DBD::Pg unable to clone postgres fd";
 		my $cfh = Coro::Handle->new_from_fh($fh);
                 return $cfh;
-	}
-	sub _coro_readable { 
-                #my $cfh = shift;
-		return shift->readable;
-	}
-	sub _coro_writable {
-                #my $cfh = shift;
-		return shift->writable;
 	}
 
 } ## end of package DBD::Pg::dr
@@ -2048,6 +2041,10 @@ differentiate it from the normal DBI trace output.
 Outputs a message showing the connection string right before a new database connection 
 is attempted, a message when the connection was successful, and a message right after 
 the database has been disconnected. Also output if trace level is 5 or greater.
+
+=item pgcoro
+
+Outputs messages for debugging this module's use of Coro and the libpq async API.
 
 =back
 

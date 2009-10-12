@@ -4850,6 +4850,8 @@ static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh)
 {
 	dSP;
 
+	if (TCORO) TRC(DBILOGFP, "%scoro_init\n", THEADER);
+
 	ENTER;
 	SAVETMPS;
 
@@ -4883,8 +4885,8 @@ static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh)
 	}
 }
 
-static const char *READABLE = "DBD::Pg::dr::_coro_readable";
-static const char *WRITABLE = "DBD::Pg::dr::_coro_writable";
+static const char *READABLE = "readable";
+static const char *WRITABLE = "writable";
 #define CORO_WAIT_FOR_READABLE coro_wait_for(aTHX_ imp_dbh, READABLE)
 #define CORO_WAIT_FOR_WRITABLE coro_wait_for(aTHX_ imp_dbh, WRITABLE)
 
@@ -4894,13 +4896,15 @@ static int coro_wait_for (pTHX_ imp_dbh_t *imp_dbh, const char *func)
 	int c;
 	int result = 0;
 
+	if (TCORO) TRC(DBILOGFP, "%scoro_wait_for: %s\n", THEADER, func);
+
 	ENTER;
 	SAVETMPS;
 
 	PUSHMARK(SP);
 	XPUSHs(imp_dbh->coro_handle);
 	PUTBACK;
-	c = call_pv(func, G_SCALAR|G_EVAL);
+	c = call_method(func, G_SCALAR|G_EVAL);
 	SPAGAIN;
 
 	if (SvTRUE(ERRSV)) {
@@ -4922,7 +4926,7 @@ static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str)
 	PostgresPollingStatusType next_state;
 	int fd;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQconnectdb (%s)\n", THEADER, conn_str);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQconnectdb (%s)\n", THEADER, conn_str);
 
 	imp_dbh->socket_fd = -1;
 
@@ -4988,18 +4992,18 @@ finish_coro_PQconnectStart:
 		PQfinish(conn);
 		conn = NULL;
 	}
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQconnectStart %d\n", THEADER, imp_dbh->socket_fd);
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQconnectStart %d\n", THEADER, imp_dbh->socket_fd);
 	return conn;
 }
 
 static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 {
 	int s = 1;
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_flush %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_flush %d\n", THEADER, imp_dbh->socket_fd);
 	while (s == 1) {
 		if (CORO_WAIT_FOR_WRITABLE != 1) {
 			imp_dbh->coro_error = COERR_INTERRUPTED;
-			if (TEND) TRC(DBILOGFP, "%sEnd coro_flush %d (INTERRUPTED)\n", THEADER, imp_dbh->socket_fd);
+			if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_flush %d (INTERRUPTED)\n", THEADER, imp_dbh->socket_fd);
 			return -1;
 		}
 		TRACE_PQFLUSH;
@@ -5010,14 +5014,14 @@ static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 		TRACE_PQERRORMESSAGE;
 		_pg_warn(aTHX_ imp_dbh, "PQflush %d failed: %s", imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
 	}
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_flush %d (%d)\n", THEADER, imp_dbh->socket_fd, s);
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_flush %d (%d)\n", THEADER, imp_dbh->socket_fd, s);
 	return s;
 }
 
 static PGresult *coro_read_one_result(pTHX_ imp_dbh_t *imp_dbh, bool expected)
 {
 	PGresult *result = NULL;
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_one_result %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_read_one_result %d\n", THEADER, imp_dbh->socket_fd);
 
 	TRACE_PQISBUSY;
 	while (PQisBusy(imp_dbh->conn)) {
@@ -5047,7 +5051,7 @@ static PGresult *coro_read_one_result(pTHX_ imp_dbh_t *imp_dbh, bool expected)
 	}
 
 finish_coro_read_one_result:
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_read_one_result %d\n", THEADER, imp_dbh->socket_fd);
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_read_one_result %d\n", THEADER, imp_dbh->socket_fd);
 	return result;
 }
 
@@ -5058,7 +5062,7 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 	ExecStatusType status;
 	bool has_error = false;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_read_result %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_read_result %d\n", THEADER, imp_dbh->socket_fd);
 
 	result = coro_read_one_result(aTHX_ imp_dbh, true);
 	if (!result) goto finish_coro_read_result;
@@ -5076,7 +5080,7 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 		// just keep consuming if we've hit an error.
 		// Only the first result should be returned.
 		if (has_error) {
-			fprintf(stderr,"coro_read_result: cleanup extra result\n"); fflush(stderr);
+			_pg_warn(aTHX_ imp_dbh, "coro_read_result: cleaned-up extra result\n");
 			TRACE_PQCLEAR;
 			PQclear(next_result);
 			continue;
@@ -5095,7 +5099,7 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
 	}
 
 finish_coro_read_result:
-	if (TSTART) TRC(DBILOGFP, "%sEnd coro_read_result %d\n", THEADER, imp_dbh->socket_fd);
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_read_result %d\n", THEADER, imp_dbh->socket_fd);
 	return result;
 }
 
@@ -5134,7 +5138,7 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
 	int s;
 	PGresult *result = NULL;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexec %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexec %d\n", THEADER, imp_dbh->socket_fd);
 
 	if (imp_dbh->coro_error != COERR_OK) {
 		goto finish_coro_PQexec;
@@ -5154,7 +5158,7 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
 	result = coro_read_result(aTHX_ imp_dbh);
 
 finish_coro_PQexec:
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexec %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexec %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 
@@ -5164,7 +5168,7 @@ static PGresult *coro_PQexecParams(pTHX_ imp_sth_t *imp_sth, const char *stateme
 	int ret;
 	PGresult *result = NULL;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexecParams %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexecParams %d\n", THEADER, imp_dbh->socket_fd);
 
 	TRACE_PQSENDQUERYPARAMS;
 	ret = PQsendQueryParams(imp_dbh->conn, statement, imp_sth->numphs, imp_sth->PQoids, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
@@ -5180,7 +5184,7 @@ static PGresult *coro_PQexecParams(pTHX_ imp_sth_t *imp_sth, const char *stateme
 	result = coro_read_result(aTHX_ imp_dbh);
 
 finish_coro_PQexecParams:
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexecParams %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexecParams %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 
@@ -5190,7 +5194,7 @@ static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement
 	int ret;
 	PGresult *result = NULL;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQprepare %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQprepare %d\n", THEADER, imp_dbh->socket_fd);
 
 	TRACE_PQSENDPREPARE;
 	ret = PQsendPrepare(imp_dbh->conn, imp_sth->prepare_name, statement, params, imp_sth->PQoids);
@@ -5205,7 +5209,7 @@ static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement
 	result = coro_read_result(aTHX_ imp_dbh);
 
 finish_coro_PQsendPrepare:
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQprepare %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQprepare %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 
@@ -5215,7 +5219,7 @@ static PGresult *coro_PQexecPrepared(pTHX_ imp_sth_t *imp_sth)
 	int ret;
 	PGresult *result = NULL;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin coro_PQexecPrepared %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexecPrepared %d\n", THEADER, imp_dbh->socket_fd);
 
 	TRACE_PQSENDQUERYPREPARED;
 	ret = PQsendQueryPrepared(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
@@ -5231,7 +5235,7 @@ static PGresult *coro_PQexecPrepared(pTHX_ imp_sth_t *imp_sth)
 	result = coro_read_result(aTHX_ imp_dbh);
 
 finish_coro_PQexecPrepared:
-	if (TEND) TRC(DBILOGFP, "%sEnd coro_PQexecPrepared %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
+	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexecPrepared %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 

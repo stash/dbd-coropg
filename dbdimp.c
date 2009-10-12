@@ -1,3 +1,4 @@
+/* vim: noet sts=0 ts=8 sw=8 */
 /*
 
   $Id: dbdimp.c 13162 2009-08-04 18:10:35Z turnstep $
@@ -5006,6 +5007,18 @@ static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 {
 	int s = 1;
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_flush %d\n", THEADER, imp_dbh->socket_fd);
+
+	// Don't try to flush if the connection isn't OK
+	TRACE_PQSTATUS;
+	if (PQstatus(imp_dbh->conn) != CONNECTION_OK) {
+		imp_dbh->coro_error = COERR_PGFATAL;
+		if (TEND || TCORO) {
+			TRACE_PQERRORMESSAGE;
+			TRC(DBILOGFP, "%sEnd coro_flush %d (%s)\n", THEADER, imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
+		}
+		return -1;
+	}
+
 	while (s == 1) {
 		if (CORO_WAIT_FOR_WRITABLE != 1) {
 			imp_dbh->coro_error = COERR_INTERRUPTED;
@@ -5019,6 +5032,9 @@ static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 		imp_dbh->coro_error = COERR_PGFATAL;
 		TRACE_PQERRORMESSAGE;
 		_pg_warn(aTHX_ imp_dbh, "PQflush %d failed: %s", imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
+	}
+	else {
+		imp_dbh->coro_error = COERR_OK;
 	}
 	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_flush %d (%d)\n", THEADER, imp_dbh->socket_fd, s);
 	return s;
@@ -5138,6 +5154,21 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh)
 	return NULL;
 }
 
+/* Put a call to "s = PQsendXxx(...)" between a BEGIN and END.  It won't run
+ * if the connection is in an error state.
+ */
+#define CORO_PGRESULT_BEGIN \
+if (imp_dbh->coro_error == COERR_OK) {
+	int s = 0;
+
+/* A "1" status could mean we couldn't flush to the socket.  Only if that
+ * works should we read the result.
+ */
+#define CORO_PGRESULT_END \
+	if (s != 1 && coro_flush(aTHX_ imp_dbh)) { s = -1; } \
+	if (s == 1) { result = coro_read_result(aTHX_ imp_dbh); } \
+}
+
 /* From the Pg docs for PQexec:
  *  [the sql param] is allowed to include multiple SQL commands (separated by
  *  semicolons) in the command string. Multiple queries sent in a single
@@ -5151,29 +5182,17 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh)
 
 static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
 {
-	int s;
 	PGresult *result = NULL;
 
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexec %d\n", THEADER, imp_dbh->socket_fd);
 
-	if (imp_dbh->coro_error != COERR_OK) {
-		goto finish_coro_PQexec;
-	}
+	CORO_PGRESULT_BEGIN;
 
 	TRACE_PQSENDQUERY;
-	if (!PQsendQuery(imp_dbh->conn, sql)) {
-		imp_dbh->coro_error = COERR_PGFATAL;
-		TRACE_PQERRORMESSAGE;
-		_pg_warn(aTHX_ imp_dbh, "PQsendQuery failed during coro_PQexec %d: %s", imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
-		goto finish_coro_PQexec;
-	}
+	s = PQsendQuery(imp_dbh->conn, sql);
 
-	if (coro_flush(aTHX_ imp_dbh) != 0)
-		goto finish_coro_PQexec;
+	CORO_PGRESULT_END;
 
-	result = coro_read_result(aTHX_ imp_dbh);
-
-finish_coro_PQexec:
 	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexec %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
@@ -5181,25 +5200,17 @@ finish_coro_PQexec:
 static PGresult *coro_PQexecParams(pTHX_ imp_sth_t *imp_sth, const char *statement)
 {
 	D_imp_dbh_from_sth;
-	int ret;
 	PGresult *result = NULL;
 
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexecParams %d\n", THEADER, imp_dbh->socket_fd);
 
+	CORO_PGRESULT_BEGIN;
+
 	TRACE_PQSENDQUERYPARAMS;
-	ret = PQsendQueryParams(imp_dbh->conn, statement, imp_sth->numphs, imp_sth->PQoids, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
+	s = PQsendQueryParams(imp_dbh->conn, statement, imp_sth->numphs, imp_sth->PQoids, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
 
-	if (!ret) {
-		imp_dbh->coro_error = COERR_PGFATAL;
-		goto finish_coro_PQexecParams;
-	}
+	CORO_PGRESULT_END;
 
-	if (coro_flush(aTHX_ imp_dbh) != 0)
-		goto finish_coro_PQexecParams;
-
-	result = coro_read_result(aTHX_ imp_dbh);
-
-finish_coro_PQexecParams:
 	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexecParams %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
@@ -5207,24 +5218,17 @@ finish_coro_PQexecParams:
 static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement, int params)
 {
 	D_imp_dbh_from_sth;
-	int ret;
 	PGresult *result = NULL;
 
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQprepare %d\n", THEADER, imp_dbh->socket_fd);
 
+	CORO_PGRESULT_BEGIN;
+
 	TRACE_PQSENDPREPARE;
-	ret = PQsendPrepare(imp_dbh->conn, imp_sth->prepare_name, statement, params, imp_sth->PQoids);
-	if (!ret) {
-		imp_dbh->coro_error = COERR_PGFATAL;
-		goto finish_coro_PQsendPrepare;
-	}
+	s = PQsendPrepare(imp_dbh->conn, imp_sth->prepare_name, statement, params, imp_sth->PQoids);
 
-	if (coro_flush(aTHX_ imp_dbh) != 0)
-		goto finish_coro_PQsendPrepare;
+	CORO_PGRESULT_END;
 
-	result = coro_read_result(aTHX_ imp_dbh);
-
-finish_coro_PQsendPrepare:
 	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQprepare %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
@@ -5232,28 +5236,19 @@ finish_coro_PQsendPrepare:
 static PGresult *coro_PQexecPrepared(pTHX_ imp_sth_t *imp_sth)
 {
 	D_imp_dbh_from_sth;
-	int ret;
 	PGresult *result = NULL;
 
 	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexecPrepared %d\n", THEADER, imp_dbh->socket_fd);
 
+	CORO_PGRESULT_BEGIN;
+
 	TRACE_PQSENDQUERYPREPARED;
-	ret = PQsendQueryPrepared(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
+	s = PQsendQueryPrepared(imp_dbh->conn, imp_sth->prepare_name, imp_sth->numphs, imp_sth->PQvals, imp_sth->PQlens, imp_sth->PQfmts, 0);
 
-	if (!ret) {
-		imp_dbh->coro_error = COERR_PGFATAL;
-		goto finish_coro_PQexecPrepared;
-	}
+	CORO_PGRESULT_END;
 
-	if (coro_flush(aTHX_ imp_dbh) != 0)
-		goto finish_coro_PQexecPrepared;
-
-	result = coro_read_result(aTHX_ imp_dbh);
-
-finish_coro_PQexecPrepared:
 	if (TEND || TCORO) TRC(DBILOGFP, "%sEnd coro_PQexecPrepared %d (%s)\n", THEADER, imp_dbh->socket_fd, _error_message(imp_dbh));
 	return result;
 }
 
 /* end of dbdimp.c */
-/* vim: noet sts=0 ts=8 sw=8 */

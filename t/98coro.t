@@ -134,7 +134,7 @@ rollback: {
     } "valid statement lives";
 
     lives_ok {
-        $dbh->disconnect;
-    };
+        $dbh->rollback;
+    } "rollback is OK";
 }
 

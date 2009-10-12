@@ -465,10 +465,14 @@ int dbd_db_ping (SV * dbh)
 		return -1;
 	}
 
-	if (imp_dbh->coro_error != COERR_OK) {
-		if (TEND) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: -4 coro error)\n", THEADER);
-		return -4;
+	if (imp_dbh->coro_error == COERR_PGFATAL) {
+		if (TEND || TCORO) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: -2 coro)\n", THEADER);
+		return -2;
 	}
+        else if (imp_dbh->coro_error != COERR_OK) {
+		if (TEND || TCORO) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: -4 coro)\n", THEADER);
+		return -4;
+        }
 
 	tstatus = pg_db_txn_status(aTHX_ imp_dbh);
 
@@ -5014,7 +5018,7 @@ static int coro_flush (pTHX_ imp_dbh_t *imp_dbh)
 		imp_dbh->coro_error = COERR_PGFATAL;
 		if (TEND || TCORO) {
 			TRACE_PQERRORMESSAGE;
-			TRC(DBILOGFP, "%sEnd coro_flush %d (%s)\n", THEADER, imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
+			TRC(DBILOGFP, "%sEnd coro_flush %d (Conn error: %s)\n", THEADER, imp_dbh->socket_fd, PQerrorMessage(imp_dbh->conn));
 		}
 		return -1;
 	}

@@ -1739,9 +1739,9 @@ $dbh->do('COPY dbd_pg_test(id,pname) TO STDOUT');
 $dbh->pg_getline($mtvar,100);
 is ($dbh->pg_ping(), 2, $t);
 
-$t='DB handle method "pg_ping" returns 2 immediately after COPY IN state';
+$t='DB handle method "pg_ping" returns 3 immediately after COPY IN state (differing from upstream DBD::Pg)';
 1 while $dbh->pg_getline($mtvar,1000);
-is ($dbh->pg_ping(), 2, $t);
+is ($dbh->pg_ping(), 3, $t);
 
 $t='DB handle method "pg_ping" returns 3 for a good connection inside a transaction';
 $dbh->do('SELECT 123');

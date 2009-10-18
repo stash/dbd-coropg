@@ -208,9 +208,9 @@ int pg_quickexec (SV *dbh, const char *sql, const int asyncflag);
 
 int pg_db_putline (SV *dbh, const char *buffer);
 
-int pg_db_getline (SV *dbh, SV * svbuf, int length);
+int pg_db_getline (pTHX_ SV *dbh, SV * svbuf, int length);
 
-int pg_db_getcopydata (SV *dbh, SV * dataline, int async);
+int pg_db_getcopydata (pTHX_ SV *dbh, SV * dataline, int async);
 
 int pg_db_putcopydata (SV *dbh, SV * dataline);
 

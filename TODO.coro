@@ -1,6 +1,6 @@
 TODO
 
-* unblock COPY IN & COPY OUT
+* unblock COPY OUT
 * get rid of pg_async ?
 * special NOTIFY processing?
 ** wait for readable(), call PQconsumeInput, then call PQnotifies (never blocks)
@@ -9,6 +9,7 @@ DONE
 
 * replace blocking functions with PQsendXxx equivalents
 * ensure proper usage of PQflush for nonblocking 
+* unblock COPY IN
 
 WON'T DO
 

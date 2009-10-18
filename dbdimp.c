@@ -95,6 +95,7 @@ static int pg_db_start_txn (pTHX_ SV *dbh, imp_dbh_t *imp_dbh);
 static int handle_old_async(pTHX_ SV * handle, imp_dbh_t * imp_dbh, const int asyncflag);
 
 static const char const *_error_message(const imp_dbh_t *imp_dbh);
+static int coro_wait_for (pTHX_ imp_dbh_t *imp_dbh, const char *func);
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str);
 static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh);
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
@@ -103,6 +104,12 @@ static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
 static PGresult *coro_PQexecParams (pTHX_ imp_sth_t *imp_sth, const char *statement);
 static PGresult *coro_PQprepare (pTHX_ imp_sth_t *imp_sth, const char *statement, int params);
 static PGresult *coro_PQexecPrepared (pTHX_ imp_sth_t *imp_sth);
+
+static const char *READABLE = "readable";
+static const char *WRITABLE = "writable";
+#define CORO_WAIT_FOR_READABLE coro_wait_for(aTHX_ imp_dbh, READABLE)
+#define CORO_WAIT_FOR_WRITABLE coro_wait_for(aTHX_ imp_dbh, WRITABLE)
+
 
 /* ================================================================== */
 void dbd_init (dbistate_t *dbistate)
@@ -473,6 +480,11 @@ int dbd_db_ping (SV * dbh)
 		if (TEND || TCORO) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: -4 coro)\n", THEADER);
 		return -4;
         }
+
+	if (imp_dbh->copystate) {
+		if (TEND) TRC(DBILOGFP, "%sEnd dbd_pg_ping (result: 2 copy in progress)\n", THEADER);
+		return 2;
+	}
 
 	tstatus = pg_db_txn_status(aTHX_ imp_dbh);
 
@@ -3711,91 +3723,44 @@ pg_db_putline (SV * dbh, const char * buffer)
 
 
 /* ================================================================== */
-int
-pg_db_getline (SV * dbh, SV * svbuf, int length)
+static int
+_read_getcopydata (pTHX_ SV * dbh, imp_dbh_t *imp_dbh, SV * dataline, int async)
 {
-	dTHX;
-	D_imp_dbh(dbh);
-	int    copystatus;
-	char * tempbuf;
-	char * buffer;
+	int copystatus;
+	char *tempbuf = NULL;
 
-	buffer = SvPV_nolen(svbuf);
+	while (1) {
+		// PQgetCopyData Won't block if async flag is true
+		TRACE_PQGETCOPYDATA;
+		copystatus = PQgetCopyData(imp_dbh->conn, &tempbuf, 1);
+		if (copystatus != 0) break;
+		if (async) break;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_getline\n", THEADER);
-
-	tempbuf = NULL;
-
-	/* We must be in COPY OUT state */
-	if (PGRES_COPY_OUT != imp_dbh->copystate)
-		croak("pg_getline can only be called directly after issuing a COPY TO command\n");
-
-	length = 0; /* Make compilers happy */
-	TRACE_PQGETCOPYDATA;
-	copystatus = PQgetCopyData(imp_dbh->conn, &tempbuf, 0);
-
-	if (-1 == copystatus) {
-		*buffer = '\0';
-		imp_dbh->copystate=0;
-		TRACE_PQENDCOPY;
-		PQendcopy(imp_dbh->conn); /* Can't hurt */
-		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_getline (-1)\n", THEADER);
-		return -1;
+		if (CORO_WAIT_FOR_READABLE == 1) {
+			imp_dbh->coro_error = COERR_INTERRUPTED;
+			copystatus = -2;
+			break;
+		}
+		TRACE_PQCONSUMEINPUT;
+		PQconsumeInput(imp_dbh->conn);
 	}
-	else if (copystatus < 1) {
-		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
-	}
-	else {
-		sv_setpv(svbuf, tempbuf);
-		TRACE_PQFREEMEM;
-		PQfreemem(tempbuf);
-	}
-	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_getline (0)\n", THEADER);
-	return 0;
-
-} /* end of pg_db_getline */
-
-
-/* ================================================================== */
-int
-pg_db_getcopydata (SV * dbh, SV * dataline, int async)
-{
-	dTHX;
-	D_imp_dbh(dbh);
-	int    copystatus;
-	char * tempbuf;
-
-	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_getcopydata\n", THEADER);
-
-	/* We must be in COPY OUT state */
-	if (PGRES_COPY_OUT != imp_dbh->copystate)
-		croak("pg_getcopydata can only be called directly after issuing a COPY TO command\n");
-
-	tempbuf = NULL;
-
-	TRACE_PQGETCOPYDATA;
-	copystatus = PQgetCopyData(imp_dbh->conn, &tempbuf, async);
 
 	if (copystatus > 0) {
-		sv_setpv(dataline, tempbuf);
-		TRACE_PQFREEMEM;
-		PQfreemem(tempbuf);
+		sv_setpvn(dataline, tempbuf, copystatus); // status is the length
 	}
-	else if (0 == copystatus) { /* async and still in progress: consume and return */
+	else if (async && 0 == copystatus) { /* async and still in progress: consume and return */
 		TRACE_PQCONSUMEINPUT;
 		if (!PQconsumeInput(imp_dbh->conn)) {
 			pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
-			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_getcopydata (error: async in progress)\n", THEADER);
-			return -2;
+			copystatus = -2;
 		}
 	}
 	else if (-1 == copystatus) {
 		PGresult * result;
 		ExecStatusType status;
-		sv_setpv(dataline, "");
+		sv_setpvn(dataline, "",0);
 		imp_dbh->copystate=0;
-		TRACE_PQGETRESULT;
-		result = PQgetResult(imp_dbh->conn);
+		result = coro_read_result(aTHX_ imp_dbh);
 		status = _sqlstate(aTHX_ imp_dbh, result);
 		TRACE_PQCLEAR;
 		PQclear(result);
@@ -3807,7 +3772,59 @@ pg_db_getcopydata (SV * dbh, SV * dataline, int async)
 		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
 	}
 
-	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_getcopydata\n", THEADER);
+	if (tempbuf) {
+		TRACE_PQFREEMEM;
+		PQfreemem(tempbuf);
+	}
+
+	return copystatus;
+}
+
+int
+pg_db_getline (pTHX_ SV * dbh, SV * svbuf, int length)
+{
+	D_imp_dbh(dbh);
+	int    copystatus;
+
+	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_getline\n", THEADER);
+
+	/* We must be in COPY OUT state */
+	if (PGRES_COPY_OUT != imp_dbh->copystate)
+		croak("pg_getline can only be called directly after issuing a COPY TO command\n");
+
+	sv_setpvn(svbuf, "",0);
+	length = 0; /* Ignored; Make compilers happy */
+
+	copystatus = _read_getcopydata(aTHX_ dbh, imp_dbh, svbuf, 1);
+	if (copystatus > 0) copystatus = 0;
+
+	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_getline (%d)\n", THEADER, copystatus);
+	return copystatus;
+
+} /* end of pg_db_getline */
+
+
+/* ================================================================== */
+int
+pg_db_getcopydata (pTHX_ SV * dbh, SV * dataline, int async)
+{
+	D_imp_dbh(dbh);
+	int    copystatus;
+
+	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_getcopydata\n", THEADER);
+
+	/* We must be in COPY OUT state */
+	if (PGRES_COPY_OUT != imp_dbh->copystate)
+		croak("pg_getcopydata can only be called directly after issuing a COPY TO command\n");
+
+	copystatus = _read_getcopydata(aTHX_ dbh, imp_dbh, dataline, async);
+
+	if (TEND) {
+		if (async && copystatus == -2)
+			TRC(DBILOGFP, "%sEnd pg_db_getcopydata (error: async in progress)\n", THEADER);
+		else 
+			TRC(DBILOGFP, "%sEnd pg_db_getcopydata\n", THEADER);
+	}
 	return copystatus;
 
 } /* end of pg_db_getcopydata */
@@ -4906,11 +4923,6 @@ static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh)
 	}
 }
 
-static const char *READABLE = "readable";
-static const char *WRITABLE = "writable";
-#define CORO_WAIT_FOR_READABLE coro_wait_for(aTHX_ imp_dbh, READABLE)
-#define CORO_WAIT_FOR_WRITABLE coro_wait_for(aTHX_ imp_dbh, WRITABLE)
-
 static int coro_wait_for (pTHX_ imp_dbh_t *imp_dbh, const char *func) 
 {
 	dSP;
@@ -5109,6 +5121,10 @@ static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh)
                 imp_dbh->last_result_err = PQresultErrorField(result,PG_DIAG_MESSAGE_PRIMARY);
 		has_error = true;
 	}
+	if (status == PGRES_COPY_OUT || status == PGRES_COPY_IN) {
+		if (TCORO) TRC(DBILOGFP, "%shandle entered copy state\n", THEADER);
+		goto finish_coro_read_result;
+	}
 
 	// Make sure to consume all results.  Loop also exits if coro is
 	// interrupted.
@@ -5193,7 +5209,7 @@ static PGresult *coro_PQexec(pTHX_ imp_dbh_t *imp_dbh, const char * sql)
 {
 	PGresult *result = NULL;
 
-	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexec %d\n", THEADER, imp_dbh->socket_fd);
+	if (TSTART || TCORO) TRC(DBILOGFP, "%sBegin coro_PQexec %d: %s\n", THEADER, imp_dbh->socket_fd, sql);
 
 	CORO_PGRESULT_BEGIN;
 

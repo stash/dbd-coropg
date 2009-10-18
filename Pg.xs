@@ -625,7 +625,7 @@ pg_getline(dbh, buf, len)
 		buf = SvGROW(bufsv, 3);
 		if (len > 3)
 			buf = SvGROW(bufsv, len);
-		ret = pg_db_getline(dbh, bufsv, (int)len);
+		ret = pg_db_getline(aTHX_ dbh, bufsv, (int)len);
 		sv_setpv((SV*)ST(1), buf);
 		SvSETMAGIC(ST(1));
 		ST(0) = (-1 != ret) ? &sv_yes : &sv_no;
@@ -635,7 +635,7 @@ pg_getcopydata(dbh, dataline)
 	INPUT:
 		SV * dbh
 	CODE:
-		RETVAL = pg_db_getcopydata(dbh, SvROK(ST(1)) ? SvRV(ST(1)) : ST(1), 0);
+		RETVAL = pg_db_getcopydata(aTHX_ dbh, SvROK(ST(1)) ? SvRV(ST(1)) : ST(1), 0);
 	OUTPUT:
 		RETVAL
 
@@ -644,7 +644,7 @@ pg_getcopydata_async(dbh, dataline)
 	INPUT:
 		SV * dbh
 	CODE:
-		RETVAL = pg_db_getcopydata(dbh, SvROK(ST(1)) ? SvRV(ST(1)) : ST(1), 1);
+		RETVAL = pg_db_getcopydata(aTHX_ dbh, SvROK(ST(1)) ? SvRV(ST(1)) : ST(1), 1);
 	OUTPUT:
 		RETVAL
 
@@ -681,7 +681,7 @@ getline(dbh, buf, len)
 		buf = SvGROW(bufsv, 3);
 		if (len > 3)
 			buf = SvGROW(bufsv, len);
-		ret = pg_db_getline(dbh, bufsv, (int)len);
+		ret = pg_db_getline(aTHX_ dbh, bufsv, (int)len);
 		sv_setpv((SV*)ST(1), buf);
 		SvSETMAGIC(ST(1));
 		ST(0) = (-1 != ret) ? &sv_yes : &sv_no;

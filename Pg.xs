@@ -341,7 +341,7 @@ void
 pg_endcopy(dbh)
 	SV * dbh
 	CODE:
-		ST(0) = (pg_db_endcopy(dbh)!=0) ? &sv_no : &sv_yes;
+		ST(0) = (pg_db_endcopy(aTHX_ dbh)!=0) ? &sv_yes : &sv_no;
 
 
 void
@@ -597,17 +597,17 @@ lo_export(dbh, lobjId, filename)
 void
 pg_putline(dbh, buf)
 	SV * dbh
-	char * buf
+	SV * buf
 	CODE:
-		ST(0) = (pg_db_putline(dbh, buf)!=0) ? &sv_no : &sv_yes;
+		ST(0) = (pg_db_putline(aTHX_ dbh, buf)!=0) ? &sv_no : &sv_yes;
 
 
 void
 putline(dbh, buf)
 	SV * dbh
-	char * buf
+	SV * buf
 	CODE:
-		ST(0) = (pg_db_putline(dbh, buf)!=0) ? &sv_no : &sv_yes;
+		ST(0) = (pg_db_putline(aTHX_ dbh, buf)!=0) ? &sv_no : &sv_yes;
 
 
 void
@@ -654,7 +654,7 @@ pg_putcopydata(dbh, dataline)
 		SV * dbh
 		SV * dataline
 	CODE:
-		RETVAL = pg_db_putcopydata(dbh, dataline);
+		RETVAL = pg_db_putcopydata(aTHX_ dbh, dataline);
 	OUTPUT:
 		RETVAL
 
@@ -663,7 +663,7 @@ pg_putcopyend(dbh)
 	INPUT:
 		SV * dbh
 	CODE:
-		RETVAL = pg_db_putcopyend(dbh);
+		RETVAL = pg_db_putcopyend(aTHX_ dbh);
 	OUTPUT:
 		RETVAL
 
@@ -690,7 +690,7 @@ void
 endcopy(dbh)
 	SV * dbh
 	CODE:
-		ST(0) = (-1 != pg_db_endcopy(dbh)) ? &sv_yes : &sv_no;
+		ST(0) = (-1 != pg_db_endcopy(aTHX_ dbh)) ? &sv_yes : &sv_no;
 
 void
 pg_server_trace(dbh,fh)

@@ -232,7 +232,7 @@ $dbh->do("COPY $table FROM STDIN");
 eval {
 	$dbh->pg_putcopydata();
 };
-ok ($@, $t);
+like ($@, qr{Usage:.+dataline}, $t);
 
 $t='Calling pg_getcopydata gives an error when in the middle of COPY .. TO';
 eval {

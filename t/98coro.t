@@ -14,7 +14,7 @@ use lib 't','.';
 require 'dbdpg_test_setup.pl';
 select(($|=1,select(STDERR),$|=1)[1]);
 
-my ( $testdsn, $testuser, $helpconnect, $su, $uid, $testdir, $pg_ctl, $initdb, $error) = get_test_settings();
+my ( $testdsn, $testuser, undef, $su, $uid, $testdir, $pg_ctl, $initdb, $error) = get_test_settings();
 my ($helpconnect,$connerror,$dbh) = connect_database();
 my (undef,undef,$dbh2) = connect_database({nosetup => 1});
 ok $dbh, "got one dbh";

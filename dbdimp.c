@@ -98,6 +98,7 @@ static const char const *_error_message(const imp_dbh_t *imp_dbh);
 static int coro_wait_for (pTHX_ imp_dbh_t *imp_dbh, const char *func);
 static PGconn * coro_PQconnectdb(pTHX_ imp_dbh_t *imp_dbh, const char *conn_str);
 static PGresult *coro_read_result(pTHX_ imp_dbh_t *imp_dbh);
+static int coro_flush(pTHX_ imp_dbh_t *imp_dbh);
 static void coro_cleanup (pTHX_ imp_dbh_t *imp_dbh);
 static SV *coro_init (pTHX_ imp_dbh_t *imp_dbh, PGconn *conn);
 static PGresult *coro_PQexec (pTHX_ imp_dbh_t *imp_dbh, const char *sql);
@@ -534,11 +535,12 @@ static int pg_db_rollback_commit (pTHX_ SV * dbh, imp_dbh_t * imp_dbh, int actio
 	PGTransactionStatusType tstatus;
 	ExecStatusType          status;
 
-	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_rollback_commit (action: %s AutoCommit: %d BegunWork: %d)\n",
+	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_rollback_commit (action: %s AutoCommit: %d BegunWork: %d, copystate: %d)\n",
 					THEADER,
 					action ? "commit" : "rollback",
 					DBIc_is(imp_dbh, DBIcf_AutoCommit) ? 1 : 0,
-					DBIc_is(imp_dbh, DBIcf_BegunWork) ? 1 : 0);
+					DBIc_is(imp_dbh, DBIcf_BegunWork) ? 1 : 0,
+					imp_dbh->copystate);
 	
 	/* No action if AutoCommit = on or the connection is invalid */
 	if ((NULL == imp_dbh->conn) || (DBIc_has(imp_dbh, DBIcf_AutoCommit))) {
@@ -588,6 +590,10 @@ static int pg_db_rollback_commit (pTHX_ SV * dbh, imp_dbh_t * imp_dbh, int actio
 		return 1;
 	}
 
+	if (imp_dbh->copystate) {
+		if (pg_db_endcopy(aTHX_ dbh)!=-1)
+			_pg_warn(aTHX_ imp_dbh, "Warning: endcopy failed during %s", action ? "commit" : "rollback");
+	}
 	status = _result(aTHX_ imp_dbh, action ? "commit" : "rollback");
 		
 	/* Set this early, for scripts that continue despite the error below */
@@ -3692,11 +3698,30 @@ void dbd_st_destroy (SV * sth, imp_sth_t * imp_sth)
 
 
 /* ================================================================== */
-int
-pg_db_putline (SV * dbh, const char * buffer)
+static int
+_write_copydata (pTHX_ imp_dbh_t *imp_dbh, SV * dbh, const char * buffer, STRLEN len)
 {
-	dTHX;
+	int copystatus;
+
+	TRACE_PQPUTCOPYDATA;
+	copystatus = PQputCopyData(imp_dbh->conn, buffer, len);
+
+	if (0 == copystatus) {
+		copystatus = coro_flush(aTHX_ imp_dbh) ? -2 : 1;
+	}
+	if (copystatus < 0) {
+		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
+	}
+
+	return copystatus;
+}
+
+int
+pg_db_putline (pTHX_ SV * dbh, SV * svbuf)
+{
 	D_imp_dbh(dbh);
+	const char *buffer;
+	STRLEN len;
 	int copystatus;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_putline\n", THEADER);
@@ -3704,9 +3729,13 @@ pg_db_putline (SV * dbh, const char * buffer)
 	/* We must be in COPY IN state */
 	if (PGRES_COPY_IN != imp_dbh->copystate)
 		croak("pg_putline can only be called directly after issuing a COPY FROM command\n");
+	if (!svbuf || !SvOK(svbuf))
+		croak("pg_putline can only be called with a defined value\n");
+
+	buffer = SvPV(svbuf,len);
 
 	TRACE_PQPUTCOPYDATA;
-	copystatus = PQputCopyData(imp_dbh->conn, buffer, (int)strlen(buffer));
+	copystatus = _write_copydata(aTHX_ imp_dbh, dbh, buffer, len);
 	if (-1 == copystatus) {
 		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
 		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putline (error: copystatus not -1)\n", THEADER);
@@ -3723,6 +3752,8 @@ pg_db_putline (SV * dbh, const char * buffer)
 
 
 /* ================================================================== */
+// Returns bytes read on success, 0 for async, -1 for completion, <= -2 for failure.
+// Allows passing in dataline pointer as NULL to ignore the results.
 static int
 _read_getcopydata (pTHX_ SV * dbh, imp_dbh_t *imp_dbh, SV * dataline, int async)
 {
@@ -3746,7 +3777,8 @@ _read_getcopydata (pTHX_ SV * dbh, imp_dbh_t *imp_dbh, SV * dataline, int async)
 	}
 
 	if (copystatus > 0) {
-		sv_setpvn(dataline, tempbuf, copystatus); // status is the length
+		if (dataline)
+			sv_setpvn(dataline, tempbuf, copystatus); // status is the length
 	}
 	else if (async && 0 == copystatus) { /* async and still in progress: consume and return */
 		TRACE_PQCONSUMEINPUT;
@@ -3758,7 +3790,8 @@ _read_getcopydata (pTHX_ SV * dbh, imp_dbh_t *imp_dbh, SV * dataline, int async)
 	else if (-1 == copystatus) {
 		PGresult * result;
 		ExecStatusType status;
-		sv_setpvn(dataline, "",0);
+		if (dataline)
+			sv_setpvn(dataline, "",0);
 		imp_dbh->copystate=0;
 		result = coro_read_result(aTHX_ imp_dbh);
 		status = _sqlstate(aTHX_ imp_dbh, result);
@@ -3766,6 +3799,7 @@ _read_getcopydata (pTHX_ SV * dbh, imp_dbh_t *imp_dbh, SV * dataline, int async)
 		PQclear(result);
 		if (PGRES_COMMAND_OK != status) {
 			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
+			copystatus = -2;
 		}
 	}
 	else {
@@ -3832,11 +3866,12 @@ pg_db_getcopydata (pTHX_ SV * dbh, SV * dataline, int async)
 
 /* ================================================================== */
 int
-pg_db_putcopydata (SV * dbh, SV * dataline)
+pg_db_putcopydata (pTHX_ SV * dbh, SV * dataline)
 {
-	dTHX;
 	D_imp_dbh(dbh);
 	int copystatus;
+	STRLEN len;
+	char *line;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_putcopydata\n", THEADER);
 
@@ -3844,19 +3879,15 @@ pg_db_putcopydata (SV * dbh, SV * dataline)
 	if (PGRES_COPY_IN != imp_dbh->copystate)
 		croak("pg_putcopydata can only be called directly after issuing a COPY FROM command\n");
 
-	TRACE_PQPUTCOPYDATA;
-	copystatus = PQputCopyData
-		(
-		 imp_dbh->conn,
-		 SvUTF8(dataline) ? SvPVutf8_nolen(dataline) : SvPV_nolen(dataline),
-		 (int)sv_len(dataline)
-		 );
+	line = SvUTF8(dataline) ? SvPVutf8(dataline,len) : SvPV(dataline,len);
 
-	if (1 == copystatus) {
+	TRACE_PQPUTCOPYDATA;
+	copystatus = PQputCopyData(imp_dbh->conn, line, len);
+
+	if (0 == copystatus) {
+		copystatus = coro_flush(aTHX_ imp_dbh) ? -2 : 1;
 	}
-	else if (0 == copystatus) { /* non-blocking mode only */
-	}
-	else {
+	if (copystatus < 0) {
 		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
 	}
 
@@ -3867,15 +3898,47 @@ pg_db_putcopydata (SV * dbh, SV * dataline)
 
 
 /* ================================================================== */
-int pg_db_putcopyend (SV * dbh)
+// 1 for success, 0 for failure
+static int
+_write_putcopyend(pTHX_ imp_dbh_t *imp_dbh, SV * dbh)
+{
+	int copystatus;
+
+	TRACE_PQPUTCOPYEND;
+	copystatus = PQputCopyEnd(imp_dbh->conn, NULL);
+
+	if (0 == copystatus) {
+		copystatus = coro_flush(aTHX_ imp_dbh) ? -2 : 1;
+	}
+
+	if (1 == copystatus) {
+		PGresult * result;
+		ExecStatusType status;
+		imp_dbh->copystate = 0;
+		result = coro_read_result(aTHX_ imp_dbh);
+		status = _sqlstate(aTHX_ imp_dbh, result);
+		TRACE_PQCLEAR;
+		PQclear(result);
+		if (PGRES_COMMAND_OK != status) {
+			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
+			return 0;
+		}
+	}
+	else {
+		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
+		return 0;
+	}
+	return 1;
+}
+
+int pg_db_putcopyend (pTHX_ SV * dbh)
 {
 
 	/* If in COPY_IN mode, terminate the COPYing */
 	/* Returns 1 on success, otherwise 0 (plus a probably warning/error) */
 
-	dTHX;
 	D_imp_dbh(dbh);
-	int copystatus;
+	int status;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_putcopyend\n", THEADER);
 
@@ -3893,47 +3956,20 @@ int pg_db_putcopyend (SV * dbh)
 
 	/* Must be PGRES_COPY_IN at this point */
 
-	TRACE_PQPUTCOPYEND;
-	copystatus = PQputCopyEnd(imp_dbh->conn, NULL);
-
-	if (1 == copystatus) {
-		PGresult * result;
-		ExecStatusType status;
-		imp_dbh->copystate = 0;
-		TRACE_PQGETRESULT;
-		result = PQgetResult(imp_dbh->conn);
-		status = _sqlstate(aTHX_ imp_dbh, result);
-		TRACE_PQCLEAR;
-		PQclear(result);
-		if (PGRES_COMMAND_OK != status) {
-			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
-			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putcopyend (error: status not OK)\n", THEADER);
-			return 0;
-		}
-		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putcopyend (1)\n", THEADER);
-		return 1;
-	}
-	else if (0 == copystatus) { /* non-blocking mode only */
-		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putcopyend (0)\n", THEADER);
-		return 0;
-	}
-	else {
-		pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
-		if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putcopyend (error: copystatus unknown)\n", THEADER);
-		return 0;
-	}
+	status = _write_putcopyend(aTHX_ imp_dbh, dbh); // 1 on success
+	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_putcopyend%s\n", THEADER, status ? "" : " (error!)");
+	return status;
 
 } /* end of pg_db_putcopyend */
 
 
 /* ================================================================== */
-int pg_db_endcopy (SV * dbh)
+// -1 for success, 0 for failure
+int pg_db_endcopy (pTHX_ SV * dbh)
 {
-	dTHX;
 	D_imp_dbh(dbh);
-	int            copystatus;
-	PGresult *     result;
-	ExecStatusType status;
+	int copystatus;
+	int status;
 
 	if (TSTART) TRC(DBILOGFP, "%sBegin pg_db_endcopy\n", THEADER);
 
@@ -3941,36 +3977,22 @@ int pg_db_endcopy (SV * dbh)
 		croak("pg_endcopy cannot be called until a COPY is issued");
 
 	if (PGRES_COPY_IN == imp_dbh->copystate) {
-		TRACE_PQPUTCOPYEND;
-		copystatus = PQputCopyEnd(imp_dbh->conn, NULL);
-		if (-1 == copystatus) {
-			pg_error(aTHX_ dbh, PGRES_FATAL_ERROR, _error_message(imp_dbh));
-			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_endcopy (error)\n", THEADER);
-			return 1;
-		}
-		else if (1 != copystatus)
-			croak("PQputCopyEnd returned a value of %d\n", copystatus);
-		/* Get the final result of the copy */
-		TRACE_PQGETRESULT;
-		result = PQgetResult(imp_dbh->conn);
-		status = _sqlstate(aTHX_ imp_dbh, result);
-		TRACE_PQCLEAR;
-		PQclear(result);
-		if (PGRES_COMMAND_OK != status) {
-			pg_error(aTHX_ dbh, status, _error_message(imp_dbh));
-			if (TEND) TRC(DBILOGFP, "%sEnd pg_db_endcopy (error: status not OK)\n", THEADER);
-			return 1;
-		}
-		copystatus = 0;
+		copystatus = _write_putcopyend(aTHX_ imp_dbh, dbh);
+		status = (copystatus == 1) ? -1 : 0;
 	}
 	else {
-		TRACE_PQENDCOPY;
-		copystatus = PQendcopy(imp_dbh->conn);
+		// PQendcopy doesn't work when using PQgetCopyData 
+		// (which is necessary for non-blocking),
+		// so just consume the rest of the stream.
+		do {
+			copystatus = _read_getcopydata(aTHX_ dbh, imp_dbh, NULL, 0);
+		} while (copystatus > 0);
+		status = (copystatus == -1) ? -1 : 0;
 	}
 
 	imp_dbh->copystate = 0;
-	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_endcopy\n", THEADER);
-	return copystatus;
+	if (TEND) TRC(DBILOGFP, "%sEnd pg_db_endcopy (%d)\n", THEADER, status);
+	return status;
 
 } /* end of pg_db_endcopy */
 

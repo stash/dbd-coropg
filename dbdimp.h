@@ -206,17 +206,17 @@ SV * pg_stringify_array(SV * input, const char * array_delim, int server_version
 
 int pg_quickexec (SV *dbh, const char *sql, const int asyncflag);
 
-int pg_db_putline (SV *dbh, const char *buffer);
+int pg_db_putline (pTHX_ SV *dbh, SV *svbuf);
 
 int pg_db_getline (pTHX_ SV *dbh, SV * svbuf, int length);
 
 int pg_db_getcopydata (pTHX_ SV *dbh, SV * dataline, int async);
 
-int pg_db_putcopydata (SV *dbh, SV * dataline);
+int pg_db_putcopydata (pTHX_ SV *dbh, SV * dataline);
 
-int pg_db_putcopyend (SV * dbh);
+int pg_db_putcopyend (pTHX_ SV * dbh);
 
-int pg_db_endcopy (SV * dbh);
+int pg_db_endcopy (pTHX_ SV * dbh);
 
 void pg_db_pg_server_trace (SV *dbh, FILE *fh);
 
